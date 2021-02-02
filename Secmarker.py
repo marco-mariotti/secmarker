@@ -724,8 +724,8 @@ def check_depencies(args):
             raise Exception, b[1]
     for i in b[1].split('\n'):
         if i.startswith('# INFERNAL'):
-            if not '# INFERNAL 1.1.1' in i:
-                raise Exception, 'ERROR: Infernal version must be 1.1.1, current version is: '+ i
+            if not '# INFERNAL 1.1' in i:
+                raise Exception, 'ERROR: Infernal version must be 1.1.X, current version is: '+ i
             break
     # check if esl-sfetch 
     b = bash('esl-sfetch -h')
