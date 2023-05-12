@@ -1,6 +1,6 @@
-import sys 
+import sys
 from .MMlib3 import bash
-from secmarker_lib import rnaplot_arm_colors,cca_coords,expand_boundingbox
+from .secmarker_lib import rnaplot_arm_colors,cca_coords,expand_boundingbox
 
 """usage: python plot_tRNA.py input
 input is the trnasec.ss file
