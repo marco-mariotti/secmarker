@@ -281,7 +281,6 @@ def main(args):
         comment = 'tRNAsec:%s model:%s infernal_score:%s truncated:%s target:%s discr_base:%s anticodon:%s' % (hit.indexx,hit.query.chromosome,hit.score,truncated,hit.target,hit.dbase,hit.acd)
 
         print('>%s\n%s' % (header, hit.extended_seq), file=output_fa_fh)
-        #print(f'>{header}\n{hit.extended_seq}', file=output_fa_fh)
         print(hit.gff( tag = 'tRNA', comment = comment , program = 'secmarker'), file=output_gff_fh)
         print(hit_nice_output(hit), file=output_ss_fh)
 
