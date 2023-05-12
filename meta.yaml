@@ -20,6 +20,9 @@ requirements:
     - python >=3.6
   run:
     - python >=3.6
+    - infernal
+    - easel
+    - viennarna
 
 about:
   home: "https://github.com/matteoserrazanetti/secmarker"
