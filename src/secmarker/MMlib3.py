@@ -1,10 +1,11 @@
 import os
 import re
 import sys
+from functools import cmp_to_key
 from string import *
-import commands
 import subprocess
-try:      import cPickle as pickle
+import io
+try:      import pickle as pickle
 except:   import pickle
 from copy import copy, deepcopy
 from math import log as math_log, sqrt
@@ -17,25 +18,52 @@ AA_LETT_STRICT='ACDEFGHIKLMNPQRSTVWY'
 RNA_LETT='ACGU'
 three_letter_codon_diz={ 'Ala':'A' ,  'Cys':'C' ,  'Asp':'D' ,  'Glu':'E' ,  'Phe':'F' ,  'Gly':'G' ,  'His':'H' ,  'Ile':'I' ,  'Lys':'K' ,  'Leu':'L' ,  'Met':'M' ,  'Asn':'N' ,  'Pro':'P' ,  'Gln':'Q' ,  'Arg':'R' ,  'Ser':'S' ,  'Thr':'T' ,  'Val':'V' ,  'Trp':'W' ,  'Tyr':'Y', '***':'*', 'Unk':'X' , '<->':'-', '---':'-','Asx':'B', 'SeC':'U', 'Zed':'Z', 'SeC(e)':'U' }
 one_to_three_letter_codon_diz={ 'A':'Ala' ,  'C':'Cys' ,  'D':'Asp' ,  'E':'Glu' ,  'F':'Phe' ,  'G':'Gly' ,  'H':'His' ,  'I':'Ile' ,  'K':'Lys' ,  'L':'Leu' ,  'M':'Met' ,  'N':'Asn' ,  'P':'Pro' ,  'Q':'Gln' ,  'R':'Arg' ,  'S':'Ser' ,  'T':'Thr' ,  'V':'Val' ,  'W':'Trp' ,  'Y':'Tyr', '*':'***', 'X':'Unk' , '-':'---' , 'B':'Asx' }
-STOP_CODONS=    ['UAA', 'UAG', 'UGA', 'URA'] 
-STOP_CODONS_DNA=['TAA', 'TAG', 'TGA', 'TRA']
+STOP_CODONS=    ['UAA', 'UAG', 'UGA', 'URA', 'UAR'] 
+STOP_CODONS_DNA=['TAA', 'TAG', 'TGA', 'TRA', 'TAR']
 one_letter_to_three_letter_aa_diz={'A':'alanine', 
 'R':'arginine', 'N':'asparagine','D':'aspartic_acid','C':'cysteine','E':'glutamic_acid','Q':'glutamine','G':'glycine','H':'histidine','I':'isoleucine','L':'leucine','K':'lysine','M':'methionine','F':'phenylalanine','P':'proline','S':'serine','T':'threonine','W':'tryptophan','Y':'tyrosine','V':'valine','U':'selenocysteine'}
 
+uppercase=ascii_uppercase
+lowercase=ascii_lowercase
+## patching old forms
+def join(iterr, sep):
+  return sep.join(iterr)
+
+def replace(s, target, repl):
+  return s.replace(target, repl)
+
+def lower(s):
+  return s.lower()
+
+def upper(s):
+  return s.upper()
+
+def find(s, what, start=None, end=None):
+  return s.find(what, start, end)
+  
+def cmp(a, b):
+    return (a > b) - (a < b) 
+
+
 try: from numpy import average, std as std_deviation
 except: 
-  sys.exc_clear()
+  # sys.exc_clear() #2022 #traceback
   def average(ilist):    return sum(ilist)/float(len(ilist))
   def std_deviation(ilist):
     a=average(ilist)
     return   sqrt(  sum(   [pow( v-a, 2)  for v in ilist]  )/len(ilist)  )
 
-def set_local_folders(temp='/users/rg/mmariotti/temp'):
+def set_temp_folder(folder):  set_MMlib_var('temp_folder', folder)
+def set_split_folder(folder): set_MMlib_var('split_folder', folder)
+def get_temp_folder():        return get_MMlib_var('temp_folder')
+def get_split_folder():       return get_MMlib_var('split_folder')
+ 
+def set_local_folders(temp='/tmp'):
   """ Used in ipython to quickly set the environment for fetching chromosomes and other stuff that required temp files"""
   try: assert is_directory(opt['temp'])
   except:  opt['temp']=temp
-  temp_folder=Folder(random_folder(opt['temp'])); test_writeable_folder(temp_folder, 'temp_folder'); set_MMlib_var('temp_folder', temp_folder)                                      
-  split_folder=Folder(opt['temp']);               test_writeable_folder(split_folder); set_MMlib_var('split_folder', split_folder)                                              
+  temp_folder=Folder(random_folder(opt['temp'])); test_writeable_folder(temp_folder, 'temp_folder'); set_temp_folder(temp_folder)        
+  split_folder=Folder(opt['temp']);               test_writeable_folder(split_folder); set_split_folder(split_folder)                                              
 
 def mute(also_stderr=False):
   """ Turns off any output to stdout (to stderr as well if option is True). To go back to normal , use unmute()"""
@@ -65,7 +93,7 @@ def bash(command, print_it=0):
   if print_it:    write(command, 1)
   if 'bin_folder' in globals(): 
     if not bin_folder  == os.environ['PATH'].split(':')[0]:      os.environ['PATH']=str(bin_folder)+':'+os.environ['PATH']
-  b1, b2= commands.getstatusoutput(command)
+  b1, b2= subprocess.getstatusoutput(command)
   return [b1, b2]
   
 def bbash(command, print_it=0, dont_die=0):
@@ -76,8 +104,8 @@ def bbash(command, print_it=0, dont_die=0):
   cmnd=command
   if 'bin_folder' in globals(): 
     if not bin_folder  == os.environ['PATH'].split(':')[0]:      os.environ['PATH']=str(bin_folder)+':'+os.environ['PATH']
-  bb=commands.getstatusoutput(cmnd)
-  if bb[0]!=0 and not dont_die:     raise Exception, 'COMMAND: ' + command+' ERROR: "'+bb[1]+' "'
+  bb=subprocess.getstatusoutput(cmnd)
+  if bb[0]!=0 and not dont_die:     raise Exception('COMMAND: ' + command+' ERROR: "'+bb[1]+' "')
   else:                             return bb[1]
   
 def bash_pipe(cmnd, print_it=0, return_popen=0, stdin=None):
@@ -92,21 +120,31 @@ def bash_pipe(cmnd, print_it=0, return_popen=0, stdin=None):
   if stdin=='PIPE': stdin=subprocess.PIPE 
   if 'print_commands' in globals() and print_commands: print_it=1
   if 'bin_folder' in globals(): 
-    if not bin_folder  == os.environ['PATH'].split(':')[0]:      os.environ['PATH']=str(bin_folder)+':'+os.environ['PATH']    
+    if not bin_folder  == os.environ['PATH'].split(':')[0]:
+      os.environ['PATH']=str(bin_folder)+':'+os.environ['PATH']    
   if print_it: write(cmnd, 1)
-  s=subprocess.Popen(cmnd.split(), stdout=subprocess.PIPE, stdin=stdin, env=os.environ)
+  s=subprocess.Popen(cmnd.split(), stdout=subprocess.PIPE, stdin=stdin, env=os.environ,
+                     universal_newlines=True) #2022
+  
   if return_popen: return s
   else:    return s.stdout
 
+def md5_executable():
+  b=bash('echo | md5sum')
+  if not b[0]: return 'md5sum'  ## command found, no error
+  b=bash('echo | md5')
+  if not b[0]: return 'md5'  ## command found, no error
+  else: raise Exception("ERROR neither md5sum  or  md5  found on this system!") 
+
 def checksum(ffile, is_text=False):
-  """ Returns the checksum for the file in input"""
+  """ Returns the checksum for the file in input """  
   if is_text:
-    pipe=bash_pipe('md5sum ', return_popen=1, stdin='PIPE')
-    print >> pipe.stdin,  ffile
+    pipe=bash_pipe(md5_executable()+' ', return_popen=1, stdin='PIPE')
+    print(ffile, file=pipe.stdin)
     pipe.stdin.close()
     m=    pipe.stdout.readline().split()[0]
   else:
-    m=bbash('md5sum '+ffile).split()[0] 
+    m=bbash(md5_executable()+' '+ffile).split()[0] 
   return m
 
     
@@ -121,7 +159,7 @@ def Folder(string):
 def random_folder(parent_folder='', dont_create_it=0):
   if parent_folder:
     parent_folder = Folder(parent_folder) #checking or creating parent folder. IF CRASHED: do you have writing privileges here?
-  a=parent_folder+ bash("date +%F%T%N | md5sum | cut -c 1-32")[1] #creating a random named folder inside the parent folder
+  a=parent_folder+ bash("date +%F%T%N | "+md5_executable()+" | cut -c 1-32")[1] #creating a random named folder inside the parent folder
   if dont_create_it:
     return a+'/'
   a=Folder(a)
@@ -130,8 +168,8 @@ def random_folder(parent_folder='', dont_create_it=0):
   else:
     return 'some_error_creating_random_folder.hopefully_there_is_noooo_file_named_like_this_when_you_try_to_delete_it'
 
-temp_folder=random_folder('/users/rg/mmariotti/temp', 1)
-split_folder=Folder('/users/rg/mmariotti/temp')
+temp_folder=random_folder('/tmp', 1)
+split_folder=Folder('/tmp')
 
 def set_MMlib_var(varname, value):  globals()[varname]=value
 def get_MMlib_var(varname):         return globals()[varname]
@@ -140,29 +178,66 @@ def is_significant(pvalue):         return pvalue<opt['alpha']
 
 printed_rchar=0
 
-trans={};
-trans ['GCA'] = "A";     trans ['GCC'] = "A";     trans ['GCG'] = "A";     trans ['GCT'] = "A";     trans ['TGC'] = "C";     trans ['TGT'] = "C";
-trans ['GAC'] = "D";     trans ['GAT'] = "D";     trans ['GAA'] = "E";     trans ['GAG'] = "E";     trans ['TTC'] = "F";     trans ['TTT'] = "F"; 
-trans ['GGA'] = "G";     trans ['GGC'] = "G";     trans ['GGG'] = "G";     trans ['GGT'] = "G";     trans ['CAC'] = "H";     trans ['CAT'] = "H";  
-trans ['ATA'] = "I";     trans ['ATC'] = "I";     trans ['ATT'] = "I";     trans ['AAA'] = "K";     trans ['AAG'] = "K";     trans ['TTA'] = "L";   
-trans ['TTG'] = "L";     trans ['CTA'] = "L";     trans ['CTC'] = "L";     trans ['CTG'] = "L";     trans ['CTT'] = "L";     trans ['ATG'] = "M";   
-trans ['AAC'] = "N";     trans ['AAT'] = "N";     trans ['CCA'] = "P";     trans ['CCC'] = "P";     trans ['CCG'] = "P";     trans ['CCT'] = "P";  
-trans ['CAA'] = "Q";     trans ['CAG'] = "Q";     trans ['AGA'] = "R";     trans ['AGG'] = "R";     trans ['CGA'] = "R";     trans ['CGC'] = "R";  
-trans ['CGG'] = "R";     trans ['CGT'] = "R";     trans ['AGC'] = "S";     trans ['AGT'] = "S";     trans ['TCA'] = "S";     trans ['TCC'] = "S";  
-trans ['TCG'] = "S";     trans ['TCT'] = "S";     trans ['ACA'] = "T";     trans ['ACC'] = "T";     trans ['ACG'] = "T";     trans ['ACT'] = "T";  
-trans ['GTA'] = "V";     trans ['GTC'] = "V";     trans ['GTG'] = "V";     trans ['GTT'] = "V";     trans ['TGG'] = "W";     trans ['TAC'] = "Y";   
-trans ['TAT'] = "Y";    # trans ['taa'] = "!";     trans ['tag'] = "#";     trans ['tga'] = "@";
-trans ['TAA'] = "*";     trans ['TAG'] = "*";     trans ['TGA'] = "*";
-trans ['---'] = "-";
+# trans={};
+# trans ['GCA'] = "A";     trans ['GCC'] = "A";     trans ['GCG'] = "A";     trans ['GCT'] = "A";     trans ['TGC'] = "C";     trans ['TGT'] = "C";
+# trans ['GAC'] = "D";     trans ['GAT'] = "D";     trans ['GAA'] = "E";     trans ['GAG'] = "E";     trans ['TTC'] = "F";     trans ['TTT'] = "F"; 
+# trans ['GGA'] = "G";     trans ['GGC'] = "G";     trans ['GGG'] = "G";     trans ['GGT'] = "G";     trans ['CAC'] = "H";     trans ['CAT'] = "H";  
+# trans ['ATA'] = "I";     trans ['ATC'] = "I";     trans ['ATT'] = "I";     trans ['AAA'] = "K";     trans ['AAG'] = "K";     trans ['TTA'] = "L";   
+# trans ['TTG'] = "L";     trans ['CTA'] = "L";     trans ['CTC'] = "L";     trans ['CTG'] = "L";     trans ['CTT'] = "L";     trans ['ATG'] = "M";   
+# trans ['AAC'] = "N";     trans ['AAT'] = "N";     trans ['CCA'] = "P";     trans ['CCC'] = "P";     trans ['CCG'] = "P";     trans ['CCT'] = "P";  
+# trans ['CAA'] = "Q";     trans ['CAG'] = "Q";     trans ['AGA'] = "R";     trans ['AGG'] = "R";     trans ['CGA'] = "R";     trans ['CGC'] = "R";  
+# trans ['CGG'] = "R";     trans ['CGT'] = "R";     trans ['AGC'] = "S";     trans ['AGT'] = "S";     trans ['TCA'] = "S";     trans ['TCC'] = "S";  
+# trans ['TCG'] = "S";     trans ['TCT'] = "S";     trans ['ACA'] = "T";     trans ['ACC'] = "T";     trans ['ACG'] = "T";     trans ['ACT'] = "T";  
+# trans ['GTA'] = "V";     trans ['GTC'] = "V";     trans ['GTG'] = "V";     trans ['GTT'] = "V";     trans ['TGG'] = "W";     trans ['TAC'] = "Y";   
+# trans ['TAT'] = "Y";    # trans ['taa'] = "!";     trans ['tag'] = "#";     trans ['tga'] = "@";
+# trans ['TAA'] = "*";     trans ['TAG'] = "*";     trans ['TGA'] = "*";
+# trans ['---'] = "-";
+## std: FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG
+
+# build alternative genetic code translation tables based on NCBI codes
+genetic_codes={}
+genetic_codes_AAs={    1:'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                       2:'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIMMTTTTNNKKSS**VVVVAAAADDEEGGGG',
+                       3:'FFLLSSSSYY**CCWWTTTTPPPPHHQQRRRRIIMMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                       4:'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                       5:'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIMMTTTTNNKKSSSSVVVVAAAADDEEGGGG',
+                       6:'FFLLSSSSYYQQCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                       9:'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIIMTTTTNNNKSSSSVVVVAAAADDEEGGGG',
+                      10:'FFLLSSSSYY**CCCWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      11:'FFLLSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      12:'FFLLSSSSYY**CC*WLLLSPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      13:'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIMMTTTTNNKKSSGGVVVVAAAADDEEGGGG',
+                      14:'FFLLSSSSYYY*CCWWLLLLPPPPHHQQRRRRIIIMTTTTNNNKSSSSVVVVAAAADDEEGGGG',
+                      16:'FFLLSSSSYY*LCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      21:'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIMMTTTTNNNKSSSSVVVVAAAADDEEGGGG',
+                      22:'FFLLSS*SYY*LCC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      23:'FF*LSSSSYY**CC*WLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      24:'FFLLSSSSYY**CCWWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSSKVVVVAAAADDEEGGGG',
+                      25:'FFLLSSSSYY**CCGWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      26:'FFLLSSSSYY**CC*WLLLAPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      27:'FFLLSSSSYYQQCCWWLLLAPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      28:'FFLLSSSSYYQQCCWWLLLAPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      29:'FFLLSSSSYYYYCC*WLLLAPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      30:'FFLLSSSSYYEECC*WLLLAPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG',
+                      31:'FFLLSSSSYYEECCWWLLLLPPPPHHQQRRRRIIIMTTTTNNKKSSRRVVVVAAAADDEEGGGG'}
+for gc_code in genetic_codes_AAs:
+  i=-1
+  genetic_codes[gc_code]={'---':'-'}
+  for a in 'TCAG':
+    for b in 'TCAG':
+      for c in 'TCAG':
+        i+=1
+        genetic_codes[gc_code][ a+b+c ]=genetic_codes_AAs[gc_code][i]
+trans=genetic_codes[1]
 
 retrotrans={}
 for codon in trans:  retrotrans.setdefault( trans[codon], []  ).append(codon)
 for aa in retrotrans: retrotrans[aa].sort()
 
-species_code_file="/users/rg/mmariotti/libraries/species_codes.tab"
-genome_config="/users/rg/mmariotti/libraries/genome.config"
+species_code_file="/home/mmariotti/software/selenoprofiles/libraries/species_codes.tab"
+genome_config="/home/mmariotti/software/selenoprofiles/libraries/genome.config"
 
-def contain_chars(string, to_check=uppercase+lowercase):
+def contain_chars(string, to_check=ascii_uppercase+ascii_lowercase):
         for char in string:
             if char in to_check:
                 return 1
@@ -183,14 +258,17 @@ def is_number(string, mode='int'):
 def is_option(s):
         return (s[0]=='-' and contain_chars(s[1:]))
 def option_value(value):
-        """value=string; returns value changed into the appropriate type.
-        """
-        if  is_number(value):                      return int(value)
-        elif is_number(value, 'float'):            return float(value)
-        else:
-            if value and value[0]==value[-1] and value[0] in ['"', "'"] and len(value)>=2:
-              value=value[1:-1]
-            return value
+  """value=string; returns value changed into the appropriate type.
+  """
+#  if value.startswith('[') and value.endswith(']'):     
+#    write(value, 1, how='yellow')
+#    return [option_value(x) for x in value[1:-1].split(', ') ]
+  if  is_number(value):                      return int(value)
+  elif is_number(value, 'float'):            return float(value)
+  elif value=='None':                        return None
+  else:
+    if value and value[0]==value[-1] and value[0] in ['"', "'"] and len(value)>=2:   value=value[1:-1]
+  return value
 
 def update_opt(new_opt, current_opt):  
   """sometimes it is useful to read options from command line, then manipulate them before using them. In this case, it is worth doing to update the opt object and sys.argv.
@@ -206,7 +284,7 @@ def update_opt(new_opt, current_opt):
 
 def fill_option(default_opt, option, dont_add_to_argv=0):   #fill the keys of option (dictionary like {option: value}) that are not present, with default values specified in default_opt
   for key in default_opt:
-    if not option.has_key(key):
+    if key not in option:
       option[key]=default_opt[key]
       if not dont_add_to_argv:
         sys.argv.extend(['-'+key, str(default_opt[key])])
@@ -221,9 +299,9 @@ class options(dict):
     self.set_synonyms(synonyms)
     
   def __getitem__(self, name):
-    if self.has_key(name):                        return super(options, self).__getitem__(name)
-    elif self['__synonyms__'].has_key(name):      return self[ self['__synonyms__'][name] ]
-    elif name in self['__synonyms__'].values():
+    if name in self:                        return super(options, self).__getitem__(name)
+    elif name in self['__synonyms__']:      return self[ self['__synonyms__'][name] ]
+    elif name in list(self['__synonyms__'].values()):
       for k in self['__synonyms__']:
         if name== self['__synonyms__'][k]:
           return self[k]
@@ -294,11 +372,11 @@ def command_line(default_opt, command_line_help='Command line usage:...', defaul
     opt.set_synonyms(synonyms)
     special_options=['h', 'print_opt', 'print_option', 'print_options', 'config', 'bin_folder', '__synonyms__']
     for k in opt:
-      if not default_opt.has_key(k) and not nowarning and not k in special_options and not k in opt.synonyms() and not  match_any_word(k, tolerated_regexp, ignore_case=0) :
+      if k not in default_opt and not nowarning and not k in special_options and not k in opt.synonyms() and not  match_any_word(k, tolerated_regexp, ignore_case=0) :
         if strict!=0:
           if type(strict) in [int, bool]: e=Exception
           elif issubclass(strict, Exception): e=strict
-          raise e, "command_line ERROR the option "+k+" is not present among the possible options. run with -print_opt to see the current option configuration"
+          raise e("command_line ERROR the option "+k+" is not present among the possible options. run with -print_opt to see the current option configuration")
         printerr('WARNING possible typo: the option '+k+' is not present among the possible options. run with -print_opt to see the current option configuration\n')
 
     opt=fill_option(default_opt, opt, dont_add_to_argv)
@@ -306,23 +384,23 @@ def command_line(default_opt, command_line_help='Command line usage:...', defaul
       if type(opt[k]) == str and opt[k].startswith('$('): opt[k]=bbash(opt[k][2:-1])
 
     #dealing with synonyms
-    keyss=opt.keys()
+    keyss=list(opt.keys())
     for k in keyss:
       if k in opt.synonyms():
         opt[opt.synonyms()[k]]=opt[k]
         del opt[k]
 
     #printing options to screen in case we have -print_opt
-    if not silent and( opt.has_key('print_opt') or opt.has_key('print_options') or opt.has_key('print_option') ):
+    if not silent and( 'print_opt' in opt or 'print_options' in opt or 'print_option' in opt ):
       write( "| ACTIVE OPTIONS:", 1)
-      keys=opt.keys()
+      keys=list(opt.keys())
       keys.sort()
       for k in keys:
         a="| "+str(k)
         write( a+' '*(30-len(a))+': '+str(opt[k]), 1)
       write('', 1)
     #printing help message in case we have -h or --help
-    if not silent and  (len(sys.argv)<2 or opt.has_key('h') ) :
+    if not silent and  (len(sys.argv)<2 or 'h' in opt ) :
       write(command_line_help, 1)
       if advanced and opt['h'] in advanced: 
         write(advanced[opt['h']], 1)
@@ -336,8 +414,8 @@ uniq_id=id
 def lineage_string_to_abstract(lineage):
   """ lineage is a string which is usually returned by this program. This function condensate it keeping the most interesting classes. """
   splt=lineage.split('; ')
-  if "Bacteria; " in lineage  :    return 'B; '+join(splt[2:min(5, len(splt))], '; ')
-  elif 'Archaea; ' in lineage :    return 'A; '+join(splt[2:min(5, len(splt))], '; ')
+  if "Bacteria; " in lineage  :    return 'B; '+'; '.join(splt[2:min(5, len(splt))])
+  elif 'Archaea; ' in lineage :    return 'A; '+'; '.join(splt[2:min(5, len(splt))])
   elif 'Eukaryota; ' in lineage:   
     out='E; '
     if 'Metazoa; ' in lineage:
@@ -379,28 +457,28 @@ def lineage_string_to_abstract(lineage):
         elif 'Placozoa; ' in lineage:      out+='Placozoa; '
         elif 'Platyhelminthes; ' in lineage: out+='Platyhelminthes; '
 
-    else:      out+= join(splt[2:min(4, len(splt))], '; ')+'; '
+    else:      out+= '; '.join(splt[2:min(4, len(splt))])+'; '
     return out[:-2]
-  else:      return join(splt[0:min(4, len(splt))], '; ')
+  else:      return '; '.join(splt[0:min(4, len(splt))])
 
 
 def get_species_fullname(species_name):
     b=bash('egrep -w "'+species_name+'" '+species_code_file)
     if b[0]:
-      raise Exception, "get_species_fullname ERROR: "+species_name+' not found'
+      raise Exception("get_species_fullname ERROR: "+species_name+' not found')
     else:
       return b[1].split('\t')[1]
 def get_species_code(species_name):
     b=bash('egrep -w "'+species_name+'" '+species_code_file)
     if b[0]:
-      raise Exception, "get_species_code ERROR: "+species_name+' not found'
+      raise Exception("get_species_code ERROR: "+species_name+' not found')
     else:
       return b[1].split('\t')[0]
 
 def get_genome_file(species_fullname):
     b=bash('egrep "'+species_fullname+'.*=" '+genome_config)
     if b[0]:
-      raise Exception, "get_genome_file ERROR: "+species_fullname+' not found'
+      raise Exception("get_genome_file ERROR: "+species_fullname+' not found')
     else:
       return del_white(b[1].split('=')[1])
 
@@ -422,7 +500,7 @@ def second_max(alist):
   return current_second_max
       
 blosum62_matrix={}
-def load_blosum(from_file="/users/rg/mmariotti/libraries/BLOSUM62sel"):
+def load_blosum(from_file="/home/mmariotti/software/selenoprofiles/libraries/BLOSUM62sel"):
   try: assert blosum62_matrix
   except:
   #ncbi format
@@ -439,7 +517,7 @@ def load_blosum(from_file="/users/rg/mmariotti/libraries/BLOSUM62sel"):
        index_line=-1
       else:
         for index_aa, num in enumerate(cline.split()[1:]):
-          if not main_diz.has_key(ordered_aminoacids[index_line]):
+          if ordered_aminoacids[index_line] not in main_diz:
             main_diz[ordered_aminoacids[index_line]]={}
           main_diz[ordered_aminoacids[index_line]][ordered_aminoacids[index_aa]]=int(num)
 
@@ -463,17 +541,17 @@ def blosum(aa1, aa2, matrix={}):
     aa1='*'
   if aa2 in 'JZ':
     aa2='*'
-  if matrix.has_key(aa1) and matrix[aa1].has_key(aa2):
+  if aa1 in matrix and aa2 in matrix[aa1]:
     return matrix[aa1][aa2]
   else:
-    raise Exception, "ERROR blosum score not defined for:"+aa1+' '+aa2
+    raise Exception("ERROR blosum score not defined for:"+aa1+' '+aa2)
 
 def similar_aas(aa1, aa2):
   '''returns True is the two aas are similar, false if not. They are defined as similar if they have a positive value in the blosum62 matrix
   '''
   similar_diz={"A":["S"], "R":["Q","K"], "N":["D","H","S","B"], "D":["N","E","B","Z"], "C":[], "Q":["R","E","K","Z"], "E":["D","Q","K","B","Z"], "G":[], "H":["N","Y"], "I":["L","M","V"], "L":["I","M","V"], "K":["R","Q","E","Z"], "M":["I","L","V"], "F":["W","Y"], "P":[], "S":["A","N","T"], "T":["S"], "W":["F","Y"], "Y":["H","F","W"], "V":["I","L","M"]}
-  if similar_diz.has_key(aa1):
-    if similar_diz.has_key(aa2):
+  if aa1 in similar_diz:
+    if aa2 in similar_diz:
       return   (aa2 in similar_diz[aa1])
   return False
 
@@ -484,7 +562,7 @@ def all_chars_in(astring):
   """ This function returns the list of characters contained in the input string. The characters are in the order of first appearance"""
   outlist=[]; chars_hash={}
   for c in astring:
-    if not chars_hash.has_key(c):
+    if c not in chars_hash:
       outlist.append(c)
       chars_hash[c]=1
   return outlist
@@ -496,17 +574,37 @@ def find_all(substring, sstring):
     if sstring[pos:pos+l]==substring: out.append(pos)
   return out
 
+default_genetic_code=1
+def set_genetic_code(code):      
+  """ Set the default translation table to this code; Input is numerical, follows NCBI standards (e.g. 1 is standard, 6 is ciliate).
+  This affects later calls of transl(seq)  """
+  return set_MMlib_var('default_genetic_code', code)
 
-def transl(cds_seq, include_selenocysteine='', gaps_to=''):
-  '''translate a nucleotide sequence in aminoacids. if you want to inlu
+def get_genetic_code():          
+  """ Get the default translation table code; numerical, follows NCBI standards"""
+  return get_MMlib_var('default_genetic_code')
+
+def get_genetic_code_table(code=None):    
+  """ Returns a dictionary codon->aminoacid for the given code (numerical, NCBI standard)
+  If code is not provided, the default set in MMlib is used"""
+  if code is None:   code=get_genetic_code()
+  return genetic_codes[code]
+
+def transl(cds_seq, include_selenocysteine=False, gaps_to=None, code=None):
+  '''translate a nucleotide sequence in aminoacids.
+  Use code=X to give a integer identifying the genetic code to be used, as NCBI codes (see https://www.ncbi.nlm.nih.gov/Taxonomy/Utils/wprintgc.cgi)
+  Use include_selenocysteine=1 to use U for TGA or UGA
+  Use gaps_to to force a certain char for gaps codons (---); normally translated as -
   '''
+  if code is None: code=default_genetic_code
   out=''
   i=0
+  codon_table=genetic_codes[code]
   while i < len(cds_seq):
     codon= replace_chars(upper(cds_seq[i:i+3]), 'U', 'T')
     if include_selenocysteine and codon=='TGA':      out+='U' 
-    elif gaps_to and codon=='---':                    out+='-'
-    elif trans.has_key(codon):                       out+=trans[codon]
+    elif gaps_to and codon=='---':                   out+=gaps_to
+    elif codon in codon_table:                 out+=codon_table[codon]
     else:                                            out+='X'
     i+=3
   return out
@@ -516,11 +614,11 @@ def retrotransl(aa_seq, gaps_to='', codon_hash={}):
   if not codon_hash: codon_hash=retrotrans
   out=''
   if len(gaps_to)==1: gaps_to*=3
-  if gaps_to and len(gaps_to)!=3: raise Exception, "retrotransl ERROR gaps_to should be a string with length 3 or 1! gaps_to="+str(gaps_to)
+  if gaps_to and len(gaps_to)!=3: raise Exception("retrotransl ERROR gaps_to should be a string with length 3 or 1! gaps_to="+str(gaps_to))
   for aa in aa_seq:
     aa=upper(aa)
     if gaps_to and aa=='-':          out+=gaps_to
-    elif codon_hash.has_key(aa):     
+    elif aa in codon_hash:     
       codon=codon_hash[aa]
       if type(codon)==list: codon=codon[0] #taking first in alphabetical order
       out+=codon
@@ -568,7 +666,7 @@ class e_v:
       if self.string == other_e_v.string:        return or_equal
       else:
         if self.value== "!" or other_e_v.value== "!":
-          raise ValueError, "ERROR in evalue class! can't compare the two evalues: "+self.string+' AND '+other_e_v.string
+          raise ValueError("ERROR in evalue class! can't compare the two evalues: "+self.string+' AND '+other_e_v.string)
         else:
           if or_equal:        return self.value <= other_e_v.value
           else:              return self.value < other_e_v.value
@@ -602,7 +700,7 @@ def shortcut_log(evalue):
       else: 
         return 0
   except:
-    print "____________ERROR: ",[evalue], type(evalue)
+    print("____________ERROR: ",[evalue], type(evalue))
 
 
 def match_any_word(main_string, word_list, is_pattern=1, ignore_case=1):
@@ -643,17 +741,17 @@ def score_tags(blast_evalues_and_titles, positive=[], negative=[], neutral=[], v
       if match_any_word(title, negative):
         score-=score_of_this_tag
         if verbose:
-          print 'NEGATIVE_M ',title, evalue, '*-'+str(score_of_this_tag)
+          print('NEGATIVE_M ',title, evalue, '*-'+str(score_of_this_tag))
       elif match_any_word(title, positive):
         score+=score_of_this_tag
         if verbose:
-          print 'POSITIVE ',title, evalue, '*+'+str(score_of_this_tag)
+          print('POSITIVE ',title, evalue, '*+'+str(score_of_this_tag))
       else:
         if verbose:
-          print 'NEGATIVE ',title, evalue, '*-'+str(score_of_this_tag)
+          print('NEGATIVE ',title, evalue, '*-'+str(score_of_this_tag))
         score-=score_of_this_tag
     elif verbose:
-      print 'NEUTRAL', title, evalue, '/'+str(score_of_this_tag)
+      print('NEUTRAL', title, evalue, '/'+str(score_of_this_tag))
 
   return score
 
@@ -719,13 +817,14 @@ def float_generalized(stringg):
     if stringg[0]=='e':
       return float('1'+stringg)
 def replace_chars(astring, chars_list, replace_to_this=''):
-  out=''
-  for c in astring:
-    if not c in chars_list:
-      out+=c
-    else:
-      out+=replace_to_this
-  return out
+  return ''.join([c if not c in chars_list else  replace_to_this      for c in astring])
+  # out=''
+  # for c in astring:
+  #   if not c in chars_list:
+  #     out+=c
+  #   else:
+  #     out+=replace_to_this
+  # return out
 
 def debug(msg):
 #  if opt.has_key('v') and opt['v']:
@@ -746,14 +845,14 @@ def printerr(msg, put_newline=0, how='', keywords={}, is_service=False):
   if sys.stdout.isatty() and not opt['no_colors']:
     if how:
       for c in how.split(','): 
-        if not terminal_codes.has_key(c): raise Exception, "ERROR option 'how' for write was not recognized: "+str(c)+' ; possible values are: '+join([i for i in terminal_codes.keys() if i], ',')
+        if c not in terminal_codes: raise Exception("ERROR option 'how' for write was not recognized: "+str(c)+' ; possible values are: '+','.join([i for i in list(terminal_codes.keys()) if i]))
         msg=terminal_codes[c]+msg+terminal_codes['']
     for word in keywords:
       code=''
       for c in keywords[word].split(','): code+=terminal_codes[c]
       msg= replace(msg, word, code+word+terminal_codes[''])
   sys.stderr.write(str(msg))
-  if not is_service and 'log_file' in globals(): print >> log_file, str(no_color_msg),
+  if not is_service and 'log_file' in globals(): print(str(no_color_msg), end=' ', file=log_file)
   
 def service(msg):
   """ see write function"""
@@ -771,7 +870,7 @@ def verbose(msg, put_newline=0):
   if put_newline:    msg=str(msg)+'\n'  
   if opt['v']:
     write( msg )
-    if 'log_file' in globals(): print >> log_file, str(msg),
+    if 'log_file' in globals(): print(str(msg), end=' ', file=log_file)
     
 terminal_codes={'':'\033[0m', 'red':'\033[31m', 'green':'\033[32m', 'black':'\033[30m', 'yellow':'\033[33m', 'blue':'\033[34m', 'magenta':'\033[35m', 'cyan':'\033[36m', 'white':'\033[37m', 'bright':'\033[1m', 'dim':'\033[2m', 'underscore':'\033[4m', 'blink':'\033[5m', 'reverse':'\033[7m', 'hidden':'\033[8m'}
 def write(msg, put_newline=0, how='', keywords={}):
@@ -786,7 +885,7 @@ Argument keywords allows to use certain colors (or other "how" arguments) for ce
   if sys.stdout.isatty() and not opt['no_colors']:
     if how:
       for c in how.split(','): 
-        if not terminal_codes.has_key(c): raise Exception, "ERROR option 'how' for write was not recognized: "+str(c)+' ; possible values are: '+join([i for i in terminal_codes.keys() if i], ',')
+        if c not in terminal_codes: raise Exception("ERROR option 'how' for write was not recognized: "+str(c)+' ; possible values are: '+','.join([i for i in list(terminal_codes.keys()) if i]))
         msg=terminal_codes[c]+msg+terminal_codes['']
     for word in keywords:
       code=''
@@ -796,7 +895,7 @@ Argument keywords allows to use certain colors (or other "how" arguments) for ce
     sys.stderr.write('\r'+printed_rchar*' '+'\r' )
     printed_rchar=0
   sys.stdout.write(msg)
-  if 'log_file' in globals(): print >> log_file, no_color_msg, 
+  if 'log_file' in globals(): print(no_color_msg, end=' ', file=log_file) 
 warning=write
 
 def is_empty_file(filename):
@@ -840,11 +939,11 @@ def positions_to_frame(pos_start, strand='+', chr_length=None):
     frame=pos_start%3
     if frame==0: frame=3
   elif strand=='-':
-    if chr_length is None: raise Exception, "ERROR positions_to_frame: if strand is negative, the chromosome length must be provided to know the frame! "
+    if chr_length is None: raise Exception("ERROR positions_to_frame: if strand is negative, the chromosome length must be provided to know the frame! ")
     frame =  pos_start%3 - chr_length%3 -1 
     if frame == 1 : frame=-2 
   else:   
-    raise Exception, "ERROR positions_to_frame: strand not recognized: '"+strand+"'"    
+    raise Exception("ERROR positions_to_frame: strand not recognized: '"+strand+"'")    
   return frame
 
 def are_overlapping_ranges( range1, range2):    #[min, max], [min, max]  ; return False or the new region containing both; 
@@ -887,7 +986,7 @@ def comment_for_gawk(string):  # comment characthers so that the string can be f
   
 def write_to_file(string, filename):
   filett =open(filename, 'w')
-  print >> filett, string
+  print(string, file=filett)
   filett.close()
 
 
@@ -931,26 +1030,26 @@ def configuration_file(filename, just_these_keys={}):
       if line.split() and line[0]!='#':
         corrected_line=line
         if corrected_line[-1]=='\n': corrected_line=corrected_line[:-1]
-        value = join(corrected_line.split('=')[1:], '=')
+        value = '='.join(corrected_line.split('=')[1:])
         key=del_white(line.split('=')[0])
         
-        if '.' in key and not just_these_keys or just_these_keys.has_key(key.split('.')[0]):
+        if '.' in key and not just_these_keys or key.split('.')[0] in just_these_keys:
           main_key=key.split('.')[0]
-          secondary_keys=join(key.split('.')[1:], '.')
-          if not opt.has_key(main_key):           opt[main_key]={}
+          secondary_keys='.'.join(key.split('.')[1:])
+          if main_key not in opt:           opt[main_key]={}
           current_targeted_hash=opt[main_key]
           while '.' in secondary_keys: # key can be e.g.    set.firstfield.secondfield  = 3  in this case a key 'set' is created in opt, its value is a new hash. Then a key in this has is added (firstfield) its value being an empty hash, then a key (secondfield) is added to this hash and the value 3 is added to it.
-            secondary_key=secondary_keys.split('.')[0]; secondary_keys=join(secondary_keys.split('.')[1:], '.')
-            if not current_targeted_hash.has_key(secondary_key): current_targeted_hash[secondary_key]={}
+            secondary_key=secondary_keys.split('.')[0]; secondary_keys='.'.join(secondary_keys.split('.')[1:])
+            if secondary_key not in current_targeted_hash: current_targeted_hash[secondary_key]={}
             current_targeted_hash=current_targeted_hash[secondary_key]
           secondary_key=secondary_keys #now no . is left
-          if not current_targeted_hash.has_key(secondary_key): current_targeted_hash[secondary_key]={}
+          if secondary_key not in current_targeted_hash: current_targeted_hash[secondary_key]={}
           current_targeted_hash[secondary_key]=option_value( del_white(value) )
         
-        if not just_these_keys or just_these_keys.has_key(key):
+        if not just_these_keys or key in just_these_keys:
           opt[key] = option_value( del_white(value) )
-    except Exception, e:
-      print "ERROR reading configuration file " +filename+ " reading line: "+line[:-1]
+    except Exception as e:
+      print("ERROR reading configuration file " +filename+ " reading line: "+line[:-1])
       raise
   return opt
   
@@ -978,7 +1077,7 @@ def alignment_relative_pos(group_align, global_align, neutral_chars='UX*'):
 
     if type(group_align)==dict:
         diz=group_align
-        lengh=len(diz.values()[0])
+        lengh=len(list(diz.values())[0])
     else:
         diz=group_align.diz
         lengh=group_align.length()
@@ -989,11 +1088,11 @@ def alignment_relative_pos(group_align, global_align, neutral_chars='UX*'):
     else:
         glodiz=global_align.diz
 
-    output=range(lengh)
+    output=list(range(lengh))
     for i in output:
         output[i]=-1
     
-    prot=diz.keys()[0]    
+    prot=list(diz.keys())[0]    
     for pos in range(lengh):
         if diz[prot][pos]=='-':
             prot=find_prot_no_gap(diz, pos)
@@ -1007,7 +1106,7 @@ def alignment_relative_pos(group_align, global_align, neutral_chars='UX*'):
                     output[pos]=pos_global
 #        print aa
                 else:
-                    print 'alignment_relative_pos ERROR AminoAcids dont correspond:\n>GROUP: '+prot+'\n'+no_gap(diz[prot])+'\n>GLOBAL: '+prot+'\n'+no_gap(glodiz[prot])
+                    print('alignment_relative_pos ERROR AminoAcids dont correspond:\n>GROUP: '+prot+'\n'+no_gap(diz[prot])+'\n>GLOBAL: '+prot+'\n'+no_gap(glodiz[prot]))
     
 
                     return False
@@ -1022,12 +1121,12 @@ def mapping_alignments(group_align, global_align, neutral_chars='UX*'):
     """
     def find_prot_no_gap(prot_diz, pos, allowed_names={}): #returns the name of a protein in the alignment which has not a gap in position pos
       for prot in prot_diz:
-        if (not allowed_names or allowed_names.has_key(prot)) and prot_diz[prot][pos]!='-':
+        if (not allowed_names or prot in allowed_names) and prot_diz[prot][pos]!='-':
           return prot
 
     if type(group_align)==dict:
         diz=group_align
-        lengh=len(diz.values()[0])
+        lengh=len(list(diz.values())[0])
     else:
         diz=group_align.diz
         lengh=group_align.length()
@@ -1038,15 +1137,15 @@ def mapping_alignments(group_align, global_align, neutral_chars='UX*'):
     else:
         glodiz=global_align.diz
 
-    output=range(lengh)
+    output=list(range(lengh))
     for i in output:
         output[i]=-1
     
-    prot=diz.keys()[0]    
+    prot=list(diz.keys())[0]    
     for pos in range(lengh):
       impossibile_position=False
   #printerr(str(pos))
-      if diz[prot][pos]=='-' or not glodiz.has_key(prot):
+      if diz[prot][pos]=='-' or prot not in glodiz:
         prot=find_prot_no_gap(diz, pos, glodiz)
         if not prot:
       #in this case, this is a position that exist only in group_align, since all common proteins have a gap in group_align in this position. So we put the same number computed in the previuos position, or the automata will stop, and we correct just before outputing putting -1 in these positions
@@ -1054,7 +1153,7 @@ def mapping_alignments(group_align, global_align, neutral_chars='UX*'):
     
           output[pos]=output[pos-1]
           impossibile_position=True
-          prot=diz.keys()[0]    
+          prot=list(diz.keys())[0]    
       if not impossibile_position:
 
         aa=diz[prot][pos]
@@ -1066,7 +1165,7 @@ def mapping_alignments(group_align, global_align, neutral_chars='UX*'):
                     output[pos]=pos_global
       #        print aa
                 else:
-                    print 'alignment_relative_pos ERROR AminoAcids dont correspond:\n>GROUP: '+prot+'\n'+no_gap(diz[prot])+'\n>GLOBAL: '+prot+'\n'+no_gap(glodiz[prot])
+                    print('alignment_relative_pos ERROR AminoAcids dont correspond:\n>GROUP: '+prot+'\n'+no_gap(diz[prot])+'\n>GLOBAL: '+prot+'\n'+no_gap(glodiz[prot]))
   
 
                     return False
@@ -1100,7 +1199,7 @@ def transfer_alignment(group_align_or_diz, global_align_or_diz, neutral_chars='U
     if type(group_align_or_diz)==dict:
       for k in group_align_or_diz:
         diz[k]=group_align_or_diz[k]
-      lengh=len(diz.values()[0])
+      lengh=len(list(diz.values())[0])
     else:
     #alignment class
       for k in group_align_or_diz.diz:
@@ -1137,11 +1236,11 @@ def transfer_alignment(group_align_or_diz, global_align_or_diz, neutral_chars='U
 #    print diz_common
     
     
-    output=range(lengh)
+    output=list(range(lengh))
     for i in output:
         output[i]=-1
     
-    prot=diz_common.keys()[0]    
+    prot=list(diz_common.keys())[0]    
     pos=0
     while pos <lengh:
         #print 'pos: '+str(pos)
@@ -1155,7 +1254,7 @@ def transfer_alignment(group_align_or_diz, global_align_or_diz, neutral_chars='U
             for p_name in glodiz:
                 glodiz[p_name]= glodiz[p_name][:pos_global]+'-'+glodiz[p_name][pos_global:]
         
-            prot=diz_common.keys()[0]
+            prot=list(diz_common.keys())[0]
     #increment iwht a gap each global seq.     set output[pos] = output[pos-1]+1
     
     
@@ -1168,11 +1267,11 @@ def transfer_alignment(group_align_or_diz, global_align_or_diz, neutral_chars='U
                   if lower(aa_global)==lower(aa) or (aa_global in neutral_chars) or (aa in neutral_chars):
                           output[pos]=pos_global
                   else:
-                    print 'transfer_alignment ERROR AminoAcids dont correspond in pos '+str(pos)+'('+aa_global+' != '+aa+') for prot:'+prot
-                    print '>cluster'
-                    print diz[prot]
-                    print '>global'
-                    print glodiz[prot]
+                    print('transfer_alignment ERROR AminoAcids dont correspond in pos '+str(pos)+'('+aa_global+' != '+aa+') for prot:'+prot)
+                    print('>cluster')
+                    print(diz[prot])
+                    print('>global')
+                    print(glodiz[prot])
                     return
                 else:
                             pos_global+=1
@@ -1192,10 +1291,10 @@ def transfer_alignment(group_align_or_diz, global_align_or_diz, neutral_chars='U
             for i in range(output[pos]-output[pos-1]-1):
                 seq+='-'
           seq+=diz[p_name][pos]
-        for i in range(len(glodiz[glodiz.keys()[0]])-1 -output[-1]):        #adding final gaps
+        for i in range(len(glodiz[list(glodiz.keys())[0]])-1 -output[-1]):        #adding final gaps
           seq+='-'
         
-        if diz_common.has_key(p_name):    #just checking. if everything is ok, I should bring this IF ->up; if common_diz.has_key(p_name): don't do
+        if p_name in diz_common:    #just checking. if everything is ok, I should bring this IF ->up; if common_diz.has_key(p_name): don't do
           'nothing'        
 #        if seq!=glodiz[p_name]:
 #            print "transfer_alignment ERROR: with "+p_name+'; seq_group = '+seq +' seq_glodiz = '+glodiz[p_name]
@@ -1213,13 +1312,65 @@ def transfer_alignment(group_align_or_diz, global_align_or_diz, neutral_chars='U
 
 
 class simmetrical_hash(dict):
-	""" ........... """
+	""" ........... old and bad implementation; see symmetrical_dict instead """
 	def get(self, k1, k2):
 		try:		  	return self[k1][k2]
 		except:			return self[k2][k1]
 symmetrical_hash=simmetrical_hash		
-	
 
+
+class symmetrical_dict(dict):
+  """ Symmetrical dictionary. Usage:
+
+  h=symmetrical_dict()
+  h['a']['b']= 'something'     # this and     h['b']['a']='something'    have the same effect
+  
+  print h['a']['b']  --> 'something'
+  print h['b']['a']  --> 'something'
+  print h['a']['x']  --> None          # NOTE THIS!
+  
+  h.has_keys('a', 'c') -> False     
+  """
+  
+  #def get_value(self, a, b):           a, b=sorted([a, b]);    return self[a][b] if a in self and b in self[a] else None
+  # def set_value(self, a, b, value):    
+  #     a, b=sorted([a, b]);    
+  #     if not a in self:        self[a]=self.subdict(parent=self, mainkey=a)
+  #     self[a][b]=value
+  
+  def __getitem__(self, key):
+    if not key in self:      self[key]=self.subdict(parent=self, mainkey=key)
+    return dict.__getitem__(self, key)
+
+  class subdict(dict):
+    def __init__(self, parent, mainkey, *args, **kargs):
+      dict.__init__(self)
+      dict.__setitem__(self, '__parent__',  parent )
+      dict.__setitem__(self, '__mainkey__', mainkey)
+            
+    def __getitem__(self, key):
+      if key < dict.__getitem__( self, '__mainkey__' ): 
+        return dict.__getitem__(      #parent dict--> get the right subdict  #                        # index it with the mainkey of this subdict #
+                                              dict.__getitem__(   dict.__getitem__(self, '__parent__'), key),     dict.__getitem__(self, '__mainkey__')  )
+      else:                         return dict.__getitem__(self, key)   if key in self else None
+    def __setitem__(self, key, value):
+      if key=='__parent__' or key=='__mainkey__':    
+        dict.__setitem__(self, key, value)
+      elif key < dict.__getitem__(self, '__mainkey__'): 
+        dict.__getitem__(self, '__parent__')[key][dict.__getitem__(self, '__mainkey__')] = value
+      else:          
+        dict.__setitem__(self, key, value) 
+	
+  def has_keys(self, a, b):
+    if b<a: a,b=b,a
+    return  dict.has_key(self, a) and b in self[a]
+
+  def all_keys(self):
+    out=set(dict.keys(self))
+    for x in dict.keys(self):    
+      for x in dict.keys( dict.__getitem__(self, x) ):
+        if x!='__mainkey__' and x!='__parent__': out.add(x)
+    return list(out)
 
 class AliError(Exception):
   def __init__(self, value):
@@ -1289,11 +1440,11 @@ class alignment:
         if short_titles:
           title=title.split()[0]
         if check_uniq_titles:
-          if all_short_titles.has_key(title.split()[0]):
-            raise Exception, "alignment-> load ERROR short title in the alignment is not uniq: "+title.split()[0]
+          if title.split()[0] in all_short_titles:
+            raise Exception("alignment-> load ERROR short title in the alignment is not uniq: "+title.split()[0])
           all_short_titles[title.split()[0]]=1
 
-        if self.diz.has_key(title):
+        if title in self.diz:
           printerr('alignment class WARNING: the title "'+title+'" is present in more than one sequence. only the last one will be stored in the alignment object.', 1 )
         else:
               self.order.append(title)
@@ -1303,7 +1454,7 @@ class alignment:
       for [title, seq] in getfastaaln(open(alignfile, 'r'), order=1):
         if short_titles:
           title=title.split()[0]
-        if self.diz.has_key(title):
+        if title in self.diz:
                 printerr('alignment class WARNING: the title "'+title+'" is present in more than one sequence. only the last one will be caught in the alignment object.' )
         else:
                 self.order.append(title)
@@ -1334,7 +1485,7 @@ class alignment:
         else: self.add( line.split()[0],  line.split()[1] )
       line=fileh.readline()
     fileh.close()
-    if line!='//\n': raise Exception, "ERROR loading stockholm file "+filename+' : \\ was not found at the end of file'
+    if line!='//\n': raise Exception("ERROR loading stockholm file "+filename+' : \\ was not found at the end of file')
     self.convert_sequences(replace, '.', '-')
 
   def load_cmalign_out(self, filename):
@@ -1351,7 +1502,7 @@ class alignment:
     while line and not line.startswith('# seq idx'):           line=fileh.readline()
     line=fileh.readline(); line=fileh.readline(); line=fileh.readline() #skipping line which makes the stockholm parser crash
     while line:
-      print >> tempfileh, line,
+      print(line, end=' ', file=tempfileh)
       line=fileh.readline()
     tempfileh.close()
     self.load_stockholm(temp_folder+'temp_cmalign_out.stk')
@@ -1376,17 +1527,17 @@ class alignment:
     if not title_that_match:
       if len(uncomplete_title.split())>1:        return self.fill_title( uncomplete_title.split()[0], silent  )
       else:
-        if not silent:         raise Exception,  "ERROR the aligment object have no sequence starting with the title: "+uncomplete_title
+        if not silent:         raise Exception("ERROR the aligment object have no sequence starting with the title: "+uncomplete_title)
         return False    
     elif title_that_match==-1:
       if len(uncomplete_title.split())>1:        return self.fill_title( uncomplete_title.split()[0], silent  )
       else:
-        if not silent:       raise Exception,    "ERROR the aligment object have no unique sequence starting with the title: "+uncomplete_title
+        if not silent:       raise Exception("ERROR the aligment object have no unique sequence starting with the title: "+uncomplete_title)
         return False
     return title_that_match
 
   def seq_of(self, title):
-    if self.diz.has_key(title):      return self.diz[title]
+    if title in self.diz:      return self.diz[title]
     elif type(title)==int:
       if title>=len(self.titles()):
         raise AliError("seq_of function ERROR the alignment object have no sequence with the id: "+str(title)     )
@@ -1405,7 +1556,7 @@ class alignment:
 
   def has_title(self, title, even_partial=False):
     if even_partial:      return bool(self.fill_title(title, silent=True))
-    else:      return self.diz.has_key(title)
+    else:      return title in self.diz
 
   def codeml_format(self):
     o='  '+str(len(self.titles()))+' '+str(self.length())+'\n'
@@ -1415,7 +1566,7 @@ class alignment:
     return o[:-1]
 
   def phylip_format(self, chars_per_block=60):
-    if not self.check_length(): raise Exception, "Sequences are not aligned! can't output phylip"
+    if not self.check_length(): raise Exception("Sequences are not aligned! can't output phylip")
     short_titles= [ title.split()[0] for title in self.titles() ] 
     max_short_title_length= max( [ len(s) for s in  short_titles ] ) 
     o='  '+str(len(self.titles()))+' '+str(self.length())+'\n'
@@ -1431,7 +1582,7 @@ class alignment:
     if not self.nseq(): return ''
     h={}
     for t in self.titles(): 
-      if h.has_key( t.split()[0] ):  raise Exception, "ERROR clustalw_format: the first word of titles must be unique to call this function"
+      if t.split()[0] in h:  raise Exception("ERROR clustalw_format: the first word of titles must be unique to call this function")
       h[t.split()[0]]=1
     max_length= max (  [len(t) for t in h]  )
     n_lines   = self.length() / ali_chars
@@ -1449,16 +1600,16 @@ class alignment:
     If the sequences do not match, if specified, attempt to match them considering wild_chars. The sequence returned will have the sequence matching perfectly the one from source ali.
     NOTE! If the sequence in self contains characters considered special by the re module, the behavior of this function is unpredictable.
     """
-    if self.nseq()!=2:   raise Exception, 'alignment->fill_sides ERROR this function can be applied only to alignments with 2 sequences'
+    if self.nseq()!=2:   raise Exception('alignment->fill_sides ERROR this function can be applied only to alignments with 2 sequences')
     if inplace:  a=self;     self.reset_derived_data()
     else:        a=self.copy()
     common_titles={} #complete_title: title ; they can be different, in that case title is the one in the self while complete_title is the one in the source_ali
     for title in a.titles(): 
       complete_title= source_ali.fill_title(title, silent=True)   #is false if it doesn't have it
       if complete_title:      common_titles[complete_title]=title
-    if len(common_titles)!=1:      raise Exception, 'alignment->fill_sides ERROR too few or too many common titles between the two alignment provided (must be 1, it is: '+str(len(common_titles))+')'
+    if len(common_titles)!=1:      raise Exception('alignment->fill_sides ERROR too few or too many common titles between the two alignment provided (must be 1, it is: '+str(len(common_titles))+')')
     
-    title_source_ali=common_titles.keys()[0];   title_self=common_titles[title_source_ali]
+    title_source_ali=list(common_titles.keys())[0];   title_self=common_titles[title_source_ali]
     complete_query_seq=           nogap(source_ali.seq_of(title_source_ali))
     partial_aligned_query_seq=    a.seq_of(title_self)
     pos_start= complete_query_seq.find(nogap(partial_aligned_query_seq)) #0 BASED
@@ -1496,7 +1647,7 @@ class alignment:
       a.set_sequence(title_self,  partial_aligned_query_seq)
       pos_start= complete_query_seq.find(nogap(partial_aligned_query_seq)) #0 BASED    
     if pos_start==-1: #rechecking if wild chars mode, or just checking to raise if no wild_chars
-      raise Exception, 'alignment->fill_sides ERROR sequences don\'t match for title: '+title_self+' -> '+nogap(a.seq_of(title_self))+" can't be found in "+complete_query_seq
+      raise Exception('alignment->fill_sides ERROR sequences don\'t match for title: '+title_self+' -> '+nogap(a.seq_of(title_self))+" can't be found in "+complete_query_seq)
     pos_end  = pos_start+len(nogap(a.seq_of(title_self)))-1 
     a.diz[title_self]= complete_query_seq[:pos_start] + a.seq_of(title_self) + complete_query_seq[pos_end+1:]
     for t in a.titles():
@@ -1506,8 +1657,7 @@ class alignment:
 
   def remove(self, protname, dontremoveuselessgaps=False):
     del self.diz[protname]    
-    if self.ss.has_key(protname):
-        del self.ss[protname]
+    if type(self.ss) == dict and protname in self.ss:       del self.ss[protname]
     self.reset_derived_data()
     for i in range(len(self.order)):
       if self.order[i]==protname:
@@ -1519,7 +1669,7 @@ class alignment:
   def change_title(self, title, new_title):
     """Change the title of a sequence in the alignment to new_title. the order of the sequence in the alignmetn is preserved """
     try:     index= self.titles().index(title)
-    except:  raise Exception, "alignment->change_title() ERROR the title provided is not found among the titles of this alignment: "+title
+    except:  raise Exception("alignment->change_title() ERROR the title provided is not found among the titles of this alignment: "+title)
     seq=   self.seq_of(title)
     self.remove(title, dontremoveuselessgaps=True)
     self.add(new_title, seq, index)
@@ -1568,7 +1718,7 @@ class alignment:
   remove_empty_columns=remove_useless_gaps
 
   def add(self, protname, seq, index=None):
-      if self.diz.has_key(del_white(protname)):
+      if del_white(protname) in self.diz:
         if seq == self.seq_of(del_white(protname)):
           printerr('alignment class WARNING: the title "'+protname+'" is already present in one sequence. Only one will be kept.\n')
         else:
@@ -1581,7 +1731,7 @@ class alignment:
         self.order.insert(index, del_white(protname))
       self.reset_derived_data()
 
-  def __nonzero__(self):
+  def __bool__(self):
     return bool(self.order)
 
   def nseq(self):
@@ -1611,7 +1761,7 @@ class alignment:
     for prot in self.diz:
         temp=getfastaxff(open(xff_folder+'/'+prot+suffix+'.xff', 'r').readlines(), 0)
         if len(temp)==1:
-          sss=temp[temp.keys()[0]]                
+          sss=temp[list(temp.keys())[0]]                
         else:
           sss=temp[prot]
         ss_cont=0
@@ -1633,7 +1783,7 @@ class alignment:
       for t in self.titles():     
         seq=self.seq_of(t)
         if fasta: seq=fasta(seq)
-        print >> newfile, ">"+t+'\n'+seq
+        print(">"+t+'\n'+seq, file=newfile)
       newfile.close()
     else:
       out=''
@@ -1643,7 +1793,7 @@ class alignment:
         out+= '\n>'+t+'\n'+seq
       if out:      out=out[1:]
       if return_it: return out 
-      else:         print  out
+      else:         print(out)
       
   def summary(self, titles=[]):
     out=''
@@ -1683,7 +1833,7 @@ class alignment:
     """ alignment = list of sequence; returns a dictionary like {letter: conservation} at POS, if conservation>=threshold; you can provide a hash of titles to be excluded. If permitted_lett=='', then all letters are permitted. Pos is 0 based!!!"""
     counts={}; titles_considered=0; out={}
     for title in self.titles():
-      if not  exclude.has_key(title):
+      if title not in exclude:
         aa=self.seq_of(title)[pos]
         counts[aa]=counts.setdefault(aa, 0)+1
         titles_considered+=1
@@ -1766,27 +1916,27 @@ class alignment:
 
   def conservation_map(self, thresholdC=0.0, exclude={}, dont_save=False):
     """returns a list of dictionary like {letter: conservation}, one per position. Titles in list exclude will not taken into account    """
-    exclude_key=  join(sorted(exclude.keys()), '&') # to index self.conservation_map_data to keep the data
+    exclude_key=  '&'.join(sorted(exclude.keys())) # to index self.conservation_map_data to keep the data
     if self.conservation_map_data is None:      self.conservation_map_data={}
-    if  not self.conservation_map_data.has_key( exclude_key ):
+    if  exclude_key not in self.conservation_map_data:
       out=[]
       for pos in range(self.length()):         out.append(self.conservation(pos, threshold=thresholdC, exclude=exclude))
       if dont_save: return out
       self.conservation_map_data[exclude_key]=out
     return self.conservation_map_data[exclude_key]
 
-#  def conservation_quadratic_score(self, titles=None):
-#    """ Return a list of scores, one per position of the alignment, computed as the sum of proportion of any character found at that position (except for character -, which then are like scored negatively). Titles can be used to call the function on a subset of the alignment."""
-#    exclude = {}    if titles is None    else    dict.fromkeys(  [t for t in self.titles() if not t in titles]  )
-#    c_map=self.conservation_map( exclude=exclude )
-#    out=[] #one score per position
-#    for pos in range(self.length()):
-#      cons_dict_pos= c_map[pos]  #pos 0 based
-#      score=0.0
-#      for char in cons_dict_pos:    
-#        if char!='-': score+=  cons_dict_pos[char]**2
-#      out.append(score)
-#    return out
+  def conservation_quadratic_score(self, titles=None):
+    """ Return a list of scores, one per position of the alignment, computed as the sum of proportion of any character found at that position (except for character -, which then are like scored negatively). Titles can be used to call the function on a subset of the alignment."""
+    exclude = {}    if titles is None    else    dict.fromkeys(  [t for t in self.titles() if not t in titles]  )
+    c_map=self.conservation_map( exclude=exclude )
+    out=[] #one score per position
+    for pos in range(self.length()):
+      cons_dict_pos= c_map[pos]  #pos 0 based
+      score=0.0
+      for char in cons_dict_pos:    
+        if char!='-': score+=  cons_dict_pos[char]**2
+      out.append(score)
+    return out
 
   def reset_derived_data(self):
     """Delete the attributes derived from computation of the alignment, as for example .conservation_map_data. This function must be run everytime some modification to the self alignment is done. """
@@ -1823,7 +1973,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     conservation_map_data=self.conservation_map(exclude=exclude)
     for pos in range(self.length()):
      # looking at the conservation profile at this position. sorting the aminoacid (or gap character) according to their representation in this column
-      sorted_keys=sorted(conservation_map_data[pos].keys(), key=conservation_map_data[pos].get, reverse=True)
+      sorted_keys=sorted(list(conservation_map_data[pos].keys()), key=conservation_map_data[pos].get, reverse=True)
       if sec_char and 'U' in sorted_keys:                                          seq+=sec_char
       elif len(sorted_keys)==1 or sorted_keys[0]!='-':                             seq+=sorted_keys[0]
       elif conservation_map_data[pos].setdefault('-', 0.0) <= threshold and len(sorted_keys)>1:    seq+=sorted_keys[1]       
@@ -1845,7 +1995,7 @@ If a master alignment is provided, the conservation threshold is checked with th
         for p in range(len(rel_pos)):
           ss_cons+=self.consensus_ss[rel_pos[p]]
         newfile=open(outfold+'/'+prot+suffix+'C.xff', 'w')        
-        print >>newfile, '>'+prot+'\n'+seq+'\n#'+ss_cons
+        print('>'+prot+'\n'+seq+'\n#'+ss_cons, file=newfile)
         newfile.close()
 
   def order_by_similarity_with(self, title, matrix=''):
@@ -1868,22 +2018,25 @@ If a master alignment is provided, the conservation threshold is checked with th
               #simulating identity matrix
               score_diz[protname] += int(self.diz[title][pos]==self.diz[protname][pos])    
 
-    def compare_function(x, y):
-      if score_diz[x]>score_diz[y]:
-        return -1
-      elif score_diz[x]==score_diz[y]:
-        return 0
-      else: 
-        return 1
+    # 2022
+    # def compare_function(x, y):
+    #   if score_diz[x]>score_diz[y]:
+    #     return -1
+    #   elif score_diz[x]==score_diz[y]:
+    #     return 0
+    #   else: 
+    #     return 1
     #  print score_diz
-    work_list.sort(compare_function)
+    #work_list.sort(compare_function)
+    #work_list.sort(key=lambda x:score_diz[x])
+    work_list.sort(key=lambda x:score_diz[x], reverse=True)     
     #  print work_list
     return work_list
 
   def sequence_identity_at_position(self, pos):
     """Return the simple sequence identity at position pos (0 based, ali based). The most conserved character at each position is considered, unless it is a gap. In that case, either the second char proportion is reported (if any is present), or 0.0 is returned."""
     cmap_this_pos=self.conservation_map()[pos]
-    sorted_chars=sorted (    cmap_this_pos.keys(),   key=lambda x: cmap_this_pos[x]   ,  reverse=True   )
+    sorted_chars=sorted (    list(cmap_this_pos.keys()),   key=lambda x: cmap_this_pos[x]   ,  reverse=True   )
     the_char=sorted_chars[0]
     if the_char == '-':
       if len(sorted_chars)==1: return 0.0
@@ -1970,7 +2123,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     """parse a 2 seq alignment and return the coordinates of local mismatches. These are defined as windows of minimal length min_length,  surrounded by strecthes of 100% conservation of minimum length: min_match_length.  indexes are starting with 0 !!!! DO NOT RELY ON THIS FUNCTION, REBUILD IT IF YOU HAVE TO USE IT.
     """
     if self.nseq()!=2:
-      raise Exception, 'cannot use this function (alignment.local_mismatches) on more or less than 2 sequences'
+      raise Exception('cannot use this function (alignment.local_mismatches) on more or less than 2 sequences')
     out=[]
     id_matrix=self.identity_matrix()
     id_matrix_string=''
@@ -2006,7 +2159,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     """
     out=[]
     if self.nseq()!=2:
-      raise Exception, 'cannot use this function (alignment.local_mismatches) on more or less than 2 sequences'
+      raise Exception('cannot use this function (alignment.local_mismatches) on more or less than 2 sequences')
     for pos in range(self.length()):
       if (self.seq_of(self.order[0])[pos]!=self.seq_of(self.order[1])[pos] ) and (count_gaps  or (not count_gaps and self.seq_of(self.order[0])[pos]!='-' and self.seq_of(self.order[1])[pos]!='-')):
         out.append(pos)
@@ -2123,7 +2276,7 @@ If a master alignment is provided, the conservation threshold is checked with th
         #print title.split()[0]+' -- '+t.split()[0]+' w: ', total_weight, 's:', score_this_seq, 'ws:', score_this_seq/float(total_weight)
         #raw_input('next?')
 
-    if not len(scores): raise Exception, "alignment-> weighted_seq_identity_of ERROR the sequence "+title.split()[0]+' has not any aligned position with any of the other sequences!'
+    if not len(scores): raise Exception("alignment-> weighted_seq_identity_of ERROR the sequence "+title.split()[0]+' has not any aligned position with any of the other sequences!')
     return sum(scores)/float(len(scores))
 
   def sequence_identity_hash(self, dont_count_gaps=False, dont_count_terminal_gaps=False ):
@@ -2162,7 +2315,7 @@ If a master alignment is provided, the conservation threshold is checked with th
       for tit in self.titles():
         if tit !=title:
           seq_identity_per_title[tit]=self.sequence_identity_of(title, tit, dont_count_gaps=dont_count_gaps, dont_count_terminal_gaps=dont_count_terminal_gaps )
-      return sum( seq_identity_per_title.values() ) / len(seq_identity_per_title.keys())
+      return sum( seq_identity_per_title.values() ) / len(list(seq_identity_per_title.keys()))
     else: return 1.0
 
   def conservation_score(self, title='', matrix={}):
@@ -2248,7 +2401,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     This function extracts a subalignment of a certain portion, starting from position (first is 0) and long length.
     """
     if self.length()<position+length:
-      raise Exception, "alignment->columns ERROR: position+length called too high, > than length of alignment: "+str(position)+'+'+str(length)+'>'+str(self.length())
+      raise Exception("alignment->columns ERROR: position+length called too high, > than length of alignment: "+str(position)+'+'+str(length)+'>'+str(self.length()))
     if not inplace:
         a=self.copy()
     else:
@@ -2277,7 +2430,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     """ This function replace a portion of the alignment, starting from position (first is 0) and long length, with another alignment whose titles must be identical
     """
     if self.length()<position+length:
-      raise Exception, "alignment->replace_columns ERROR: position+length called too high, > than length of alignment: "+str(position)+'+'+str(length)+'>'+str(self.length())
+      raise Exception("alignment->replace_columns ERROR: position+length called too high, > than length of alignment: "+str(position)+'+'+str(length)+'>'+str(self.length()))
     if not inplace:
         a=self.copy()
     else:
@@ -2285,7 +2438,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     if sorted(self.diz.keys())!=sorted(subalignment.diz.keys()):  #checking titles. 
       #write_to_file( join( sorted(self.diz.keys()), '\n'), 'a')  
       #write_to_file( join(sorted(subalignment.diz.keys()), '\n'), 'b')
-      raise Exception, "alignment->replace_columns ERROR: the two alignments must have the same titles! "
+      raise Exception("alignment->replace_columns ERROR: the two alignments must have the same titles! ")
 
     for title in self.titles():
         a.diz[title]=a.diz[title][:position]+subalignment.diz[title]+a.diz[title][position+length:]
@@ -2296,7 +2449,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     """ This function sum the self with another alignment with identical titles: the sequences are concatenated
     """
     if self.titles()!=other_ali.titles():  #checking titles. 
-      raise Exception, "alignment->concatenate_with ERROR: the two alignments must have the same titles! "
+      raise Exception("alignment->concatenate_with ERROR: the two alignments must have the same titles! ")
     if not inplace:
         a=self.copy()
     else:
@@ -2310,7 +2463,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     """ This function delete subalignment of a certain portion, starting from position (first is 0) and long length.
     """
     if self.length()<position+length:
-      raise Exception, "alignment->delete_columns ERROR: position+length called too high, > than length of alignment: "+str(position)+'+'+str(length)+'>'+str(self.length())
+      raise Exception("alignment->delete_columns ERROR: position+length called too high, > than length of alignment: "+str(position)+'+'+str(length)+'>'+str(self.length()))
     if not inplace:
         a=self.copy()
     else:
@@ -2332,9 +2485,9 @@ If a master alignment is provided, the conservation threshold is checked with th
         seq_no_gap=nogap(self.seq_of(title))
         for index, char in enumerate( seq_no_gap ):
           if char in forbidden_dict: 
-            if not stars_chars.has_key(title): stars_chars[title]=[]           
+            if title not in stars_chars: stars_chars[title]=[]           
             stars_chars[title].append( [index, char]  )
-        if stars_chars.has_key(title): self.set_sequence(title, replace_chars(self.seq_of(title),  forbidden_dict, 'X') )
+        if title in stars_chars: self.set_sequence(title, replace_chars(self.seq_of(title),  forbidden_dict, 'X') )
 
       if program=='mafft':
         self.display(temp_folder+'realigning_with_mafft')
@@ -2352,7 +2505,7 @@ If a master alignment is provided, the conservation threshold is checked with th
           b.add( old_full_title, seq)          
           seq_index+=1
 
-        if not b.titles(): raise Exception, "ERROR realign with mafft failed! output alignment is empty."
+        if not b.titles(): raise Exception("ERROR realign with mafft failed! output alignment is empty.")
 
         for title in stars_chars:
           seq=b.seq_of(title)
@@ -2360,8 +2513,8 @@ If a master alignment is provided, the conservation threshold is checked with th
             pos_ali=b.position_in_ali(title, pos_seq+1)
             seq= seq[:pos_ali-1]+ char  +seq[pos_ali:]
           b.set_sequence(title, seq)
-        if not b.titles():          raise AliError, "ERROR mafft failed in realigning!"
-      else: raise Exception, "ERROR only mafft is currently supported"      
+        if not b.titles():          raise AliError("ERROR mafft failed in realigning!")
+      else: raise Exception("ERROR only mafft is currently supported")      
       #elif ... #add more programs if needed
       if not inplace:      return b
       else:                self.diz=b.diz; self.order=b.order; self.reset_derived_data()
@@ -2375,7 +2528,7 @@ If a master alignment is provided, the conservation threshold is checked with th
     else:                  a=self; self.reset_derived_data()
     shrinked_length=0
     for pos, l in input_list:
-      if self.length()<pos-shrinked_length+l:        raise Exception, "alignment->realign_columns ERROR: position+length called too high, > than length of alignment: "+str(pos)+'+'+str(l)+'>'+str(self.length())
+      if self.length()<pos-shrinked_length+l:        raise Exception("alignment->realign_columns ERROR: position+length called too high, > than length of alignment: "+str(pos)+'+'+str(l)+'>'+str(self.length()))
       cols=a.columns(pos-shrinked_length, l)
       removed_titles= cols.remove_empty_seqs()
 
@@ -2488,14 +2641,14 @@ If only_titles is specified, it is necessary that the columns to realign have no
           if self.seq_of(title)[pos]!='-':            score+=max_cons_lett[1]
           else:                                       score-=max_cons_lett[1]
         temp_diz_to_sort[title]=   float(score) / self.length()
-    sorted_titles=temp_diz_to_sort.keys()
+    sorted_titles=list(temp_diz_to_sort.keys())
     sorted_titles.sort(key=temp_diz_to_sort.get, reverse=True)
     if inplace:      self.order= sorted_titles
     else:            return      sorted_titles
 
   def set_sequence(self, title, sequence):
     """ Like add, but it is meant to change existing sequences. If the alignment does not have title, an expection is raised"""
-    if not self.diz.has_key(title): raise Exception, "alignment->set_sequence ERROR the alignment does not have title: "+str(title)
+    if title not in self.diz: raise Exception("alignment->set_sequence ERROR the alignment does not have title: "+str(title))
     self.diz[title]=sequence
     self.reset_derived_data()      
 
@@ -2509,11 +2662,11 @@ If only_titles is specified, it is necessary that the columns to realign have no
     diz_common={}  #contains the names of the common prot between this and other alignment
     for title_self in this_ali.titles():
       if title_self in other_ali.titles():    diz_common[title_self]=1
-    if len(diz_common)==0:     raise Exception, 'alignment->transfer_aligment ERROR: no common proteins between the two alignments'
+    if len(diz_common)==0:     raise Exception('alignment->transfer_aligment ERROR: no common proteins between the two alignments')
 
     position_map=[-1 for i in range(this_ali.length())]   #maps positions of this_ali to the positions of other_ali
     
-    prot=diz_common.keys()[0]           
+    prot=list(diz_common.keys())[0]           
     pos=0 #this keeps track of the position in this_ali  ; pos_global keeps track of the position in other ali
     while pos <this_ali.length():
       if this_ali.seq_of(prot)[pos]=='-':              prot=find_prot_no_gap(diz_common, pos, this_ali)
@@ -2524,7 +2677,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
           new_sequence= other_ali.seq_of(p_name)[:pos_global]+'-'+other_ali.seq_of(p_name)[pos_global:]
           #if 'sps_Plasmodium_knowlesi_2007-2008/1-811' in p_name: print ">before: \n"+other_ali.seq_of(p_name)+'\n>after: \n'+new_sequence
           other_ali.set_sequence(p_name, new_sequence)
-        prot=diz_common.keys()[0]
+        prot=list(diz_common.keys())[0]
       else:    
         aa=this_ali.seq_of(prot)[pos]
         pos_global=position_map[pos-1]+1     #becomes 0 if pos is 0, for construction
@@ -2535,7 +2688,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
                       position_map[pos]=pos_global
               else:                  
                 printerr( other_ali.seq_of(prot)[pos_global-4:pos_global+4] +' != '+ this_ali.seq_of(prot)[pos-4:pos+4] , 1)
-                raise Exception, 'alignment->transfer_alignment ERROR AminoAcids dont correspond in pos '+str(pos)+' | '+str(pos_global)+' ('+aa_global+' != '+aa+') for title: '+ prot
+                raise Exception('alignment->transfer_alignment ERROR AminoAcids dont correspond in pos '+str(pos)+' | '+str(pos_global)+' ('+aa_global+' != '+aa+') for title: '+ prot)
             else:                pos_global+=1
       pos+=1
     
@@ -2549,7 +2702,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
           for i in range(position_map[pos]-position_map[pos-1]-1):                seq+='-'
         seq+=this_ali.seq_of(p_name)[pos]
       for i in range(other_ali.length()-1 -position_map[-1]):  seq+='-'    #adding final gaps
-      if not diz_common.has_key(p_name):          other_ali.add(p_name, seq )
+      if p_name not in diz_common:          other_ali.add(p_name, seq )
     #correcting desert columns defect:
     if not dont_shrink:      other_ali.shrink()
     return other_ali
@@ -2562,7 +2715,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
     """
     temp_ali_h=open(temp_folder+'temp_ali_for_removing_redundancy.fa', 'w')    
     for index, title in enumerate( self.titles() ):
-      print >> temp_ali_h, ">"+str(index)+'\n'+fasta(self.seq_of(title))
+      print(">"+str(index)+'\n'+fasta(self.seq_of(title)), file=temp_ali_h)
     temp_ali_h.close()
 
     bbash('t_coffee -other_pg seq_reformat -in '+temp_folder+'temp_ali_for_removing_redundancy.fa'+' -action +trim _aln_%%'+str(int(max_pair_identity*100))+'_ -output fasta_aln > '+temp_folder+'temp_ali_for_removing_redundancy.trimmed.fa')
@@ -2612,13 +2765,13 @@ If only_titles is specified, it is necessary that the columns to realign have no
     
         cmap=cluster_ali.conservation_map(dont_save=True)
         for pos in range(cluster_ali.length()):
-          sorted_aa_this_pos =  sorted( cmap[pos].keys(), key= lambda x: cmap[pos].get, reverse=True) #sorted by representation
+          sorted_aa_this_pos =  sorted( list(cmap[pos].keys()), key= lambda x: cmap[pos].get, reverse=True) #sorted by representation
           if len(sorted_aa_this_pos)>1 and sorted_aa_this_pos[0]=='-':    consensus_this_pos=sorted_aa_this_pos[1]
           else:                                                           consensus_this_pos=sorted_aa_this_pos[0]
           cluster_seq+=consensus_this_pos
 
         if verbose: 
-          printerr(  join([ t.split()[0] for t in cluster_ali.titles()], ', ')+' --> '+cluster_title, 1   )
+          printerr(  ', '.join([ t.split()[0] for t in cluster_ali.titles()])+' --> '+cluster_title, 1   )
 
       else:
         cluster_title=cluster_ali.titles()[0]
@@ -2665,7 +2818,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
     for index_1 in range(len(self.titles())):
       title_1 = self.titles()[index_1]
       
-      if clusters.has_key(title_1):
+      if title_1 in clusters:
         this_cluster_id = clusters[title_1]
       else:
         this_cluster_id = clusters_next_id
@@ -2676,11 +2829,11 @@ If only_titles is specified, it is necessary that the columns to realign have no
         title_2 = self.titles()[index_2]
         if not min_overlap or  len([ True     for p in range(self.length())   if  self.seq_of(title_1)[p]!='-' and self.seq_of(title_2)[p]!='-'   ]) >= min_overlap: # checking in how many columns we have some non gap in both sequences. if the number is very low, we can have high seq id even idf the sequences don't look alike
           if h.get(title_1, title_2) >= threshold:
-            if clusters.has_key(title_2) and not clusters[title_2]==this_cluster_id : # title_2 was already in a cluster. let's update all other titles to be in this cluster
+            if title_2 in clusters and not clusters[title_2]==this_cluster_id : # title_2 was already in a cluster. let's update all other titles to be in this cluster
               clusters_to_update = clusters[title_2]
               
               for t in self.titles():
-                if clusters.has_key(t) and clusters[t] == clusters_to_update:
+                if t in clusters and clusters[t] == clusters_to_update:
                   clusters[t] = this_cluster_id
             else:
               clusters[title_2] = this_cluster_id
@@ -2688,7 +2841,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
     c = {}#{c_id:alignment}
     for t in self.titles():
       c_id = clusters[t]
-      if not c.has_key(c_id):
+      if c_id not in c:
         c[c_id] = outclass()
       c[c_id].add(t, self.seq_of(t))
 
@@ -2697,7 +2850,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
       #print """The following sequences don\'t get the minimum threshold.
     #For them, a second clustering is performed reducing the threshold in one half.
     #"""
-      for k in c.keys():
+      for k in list(c.keys()):
         if c[k].nseq() == 1:
           for title in c[k].titles():
             solitaire_seqs[title]=1
@@ -2707,15 +2860,15 @@ If only_titles is specified, it is necessary that the columns to realign have no
                 if h.get(title, title2) > max_seq_id:
                   max_seq_id=h.get(title, title2)
                   max_title=title2
-            if h.get(title, max_title) >= threshold/float(reclustering_factor) and not solitaire_seqs.has_key(max_title):
+            if h.get(title, max_title) >= threshold/float(reclustering_factor) and max_title not in solitaire_seqs:
               c[clusters[max_title]].add(title, self.seq_of(title))
               #print ' --> '+title.split()[0].ljust(40)+' clustered with   '+max_title.split()[0].ljust(50)+'identity '+str(h.get(title, max_title))
               del c[clusters[title]]
       
     if not dont_remove_empty_columns:
-      for k in c.keys():      c[k].remove_useless_gaps()      
+      for k in list(c.keys()):      c[k].remove_useless_gaps()      
 
-    sorted_c_ids = c.keys()
+    sorted_c_ids = list(c.keys())
     def nseq_for_key(k):      return c[k].nseq()
     sorted_c_ids.sort(key=nseq_for_key, reverse=True)    
         
@@ -2756,7 +2909,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
     for out_t, other_ts in out_titles:
       for discarded_t in other_ts: 
         correspondance_hash[discarded_t]=out_t
-        if not silent:          write('REMOVED: '+ discarded_t.split()[0].ljust(40)+' -> KEPT: '+out_t.split()[0], 1)
+        if not silent:          write('REMOVED: '+ discarded_t.split()[0]+' >KEPT: '+out_t.split()[0], 1)
 
     if inplace:
       out_titles_h={}
@@ -2774,12 +2927,12 @@ If only_titles is specified, it is necessary that the columns to realign have no
       return o      
     
 
-  def build_tree(self,    folder=None,  tree_class=None,  trimal_options=' -phylip -gt 0.1 -cons 33.33 ', phylogeny_options= '-c /users/rg/mmariotti/libraries/salva_pipeline.config.for_selenoprofiles'    ):
+  def build_tree(self,    folder=None,  tree_class=None,  trimal_options=' -phylip -gt 0.1 -cons 33.33 ', phylogeny_options= '-c /home/mmariotti/software/selenoprofiles/libraries/salva_pipeline.config.for_selenoprofiles'    ):
     """ Uses Salva pipeline to build a tree. Note: use only for amino acid sequences.
     A folder dedicated to compute the phylogeny is created  (folder argument -- done in temp folder if not provided).
     it the tree_class argument is not defined (as default), the path to newick tree file computed is returned. Otherwise, one may provide a tree class (such as ete2.Tree), and this will be initialised with the mentioned tree file     """
     
-    if self.nseq()<3: raise Exception, "ERROR can't build a tree with less than 3 sequences!"
+    if self.nseq()<3: raise Exception("ERROR can't build a tree with less than 3 sequences!")
     if folder is None: folder=temp_folder+'building_tree'
     folder=Folder(folder) # creating if necessary, adding "/" 
     input_of_trimal_filename =                          folder+'ali.'+'.raw_ali'
@@ -2795,7 +2948,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
     ali_temp.display(input_of_trimal_filename)
     bbash('trimal -in '+input_of_trimal_filename+' -out '+output_of_trimal_filename+' '+trimal_options)
     bbash('trimal -in '+output_of_trimal_filename+' -out '+fasta_copy_of_output_of_trimal_filename+' -fasta ')
-    write_to_file( join([">"+t+'\n'+nogap(s)       for t, s in parse_fasta(fasta_copy_of_output_of_trimal_filename)], '\n')      , ungapped_fasta_copy_of_output_of_trimal_filename)  
+    write_to_file( '\n'.join([">"+t+'\n'+nogap(s)       for t, s in parse_fasta(fasta_copy_of_output_of_trimal_filename)])      , ungapped_fasta_copy_of_output_of_trimal_filename)  
     bbash('cd '+folder+' ; ReconstructingTrees.py '+phylogeny_options+' -f '+base_filename(output_of_trimal_filename)+' -d ./ ')
 
     ml_tree_files=bbash('find '+folder+' -name "'+'ali.tree.ml.*.nw'+'"').split('\n')
@@ -2804,7 +2957,7 @@ If only_titles is specified, it is necessary that the columns to realign have no
       ranks={}
       for line in open(rank_file, 'r'):
         ranks[line.split()[0]]=float(line.split()[1])
-      best_model=sorted(ranks.keys(), key=ranks.get)[-1] #since they are negative, we want the highest one, the closest the zero
+      best_model=sorted(list(ranks.keys()), key=ranks.get)[-1] #since they are negative, we want the highest one, the closest the zero
       ml_tree_file=folder+'ali.tree.ml.'+best_model+'.nw'
     else:
       ml_tree_file=ml_tree_files[0]
@@ -2822,10 +2975,10 @@ def complete_word(uncomplete_word, dictionary, word_match=False):
   ex: ('cat' {'carpet':1, 'catastrophe':1, 'bunny':1}) -->return 'catastrophe'
   if word_match==True: when the title would be called as non-unique, an additional check is performed: if a single title has a space or a tab right after the match, this is considered a good match and it is returned.   ex: ('dog' , {'doggie':1, 'dogs':1, 'dog one':1}) --> 'dog one' is returned. if no word_match option is set, this would return -1
   """
-  if dictionary.has_key(uncomplete_word): return uncomplete_word
+  if uncomplete_word in dictionary: return uncomplete_word
   title_length=len(uncomplete_word)
   title_that_match=''
-  for t in dictionary.keys():
+  for t in list(dictionary.keys()):
 #    if len(t)>= title_length:
 #      'nothing'
 #      print t[:title_length]
@@ -2850,7 +3003,7 @@ def remove_items_from_list(alist, item_list, inplace=False):
   items_hash={}
   for item in item_list: items_hash[item]=1
   for index in range(len(outlist)-1, -1, -1):
-    if items_hash.has_key(outlist[index]): outlist.pop(index)
+    if outlist[index] in items_hash: outlist.pop(index)
   return outlist
 
 def remove_items_from_list_with_indexes(alist, index_list, inplace=False, index_are_ordered=False):
@@ -2859,12 +3012,12 @@ def remove_items_from_list_with_indexes(alist, index_list, inplace=False, index_
   else: outlist=alist
   if index_list:
     if not index_are_ordered:    index_list.sort()
-    if index_list[-1] >= len(outlist): raise Exception, "remove_items_from_list_with_indexes ERROR one or more indexes are > than the length of the list: "+str(index_list)+' > '+str(len(outlist))
+    if index_list[-1] >= len(outlist): raise Exception("remove_items_from_list_with_indexes ERROR one or more indexes are > than the length of the list: "+str(index_list)+' > '+str(len(outlist)))
     for item_index in range(len(outlist)-1, -1, -1):
       if item_index== index_list[-1]:     #item found
         index_list.pop(-1)
         outlist.pop(item_index)
-    if index_list: raise Exception, "remove_items_from_list_with_indexes oops"
+    if index_list: raise Exception("remove_items_from_list_with_indexes oops")
   return outlist
 
 
@@ -2910,14 +3063,14 @@ def getfastaaln(cfile,order=1): #clustalW format
   seq=''
   ord_list=[]    #[ [title1, seq1], [title2, seq2] ... ]
   diz={}      #{ title: seq   }
-  while not line or line[0]=='#' or 'CLUSTAL FORMAT' in line:
+  while not line or line[0]=='#' or line.startswith('CLUSTAL'):
                 line=cfile.readline()
             
 #        while not finished:
   cont_seq=0
   while line:
-    while line!='\n' and line:
-      title= join(line.split()[:-1], ' ')
+    while line!='\n' and line.strip() and not line.strip()[0] in '*.:':
+      title= ' '.join(line.split()[:-1])
       if  title and  line.split()[0]!='cons':
 #        print [line]
         if len(ord_list)<=cont_seq:
@@ -2998,7 +3151,7 @@ reverse_complement_diz={'A':'T', 'T':'A','G':'C','C':'G',  'N':'N', 'X':'X',   '
 def reverse_complement(seq):
   out=''
   for i in range(len(seq)):
-    if reverse_complement_diz.has_key(seq[len(seq)-1-i]   ):      out+=reverse_complement_diz[seq[len(seq)-1-i]   ]
+    if seq[len(seq)-1-i] in reverse_complement_diz:      out+=reverse_complement_diz[seq[len(seq)-1-i]   ]
     else:                                                         out+=seq[len(seq)-1-i]  
   return out
 
@@ -3034,8 +3187,8 @@ def smith_waterman(seq1, seq2, gap_open=-4, gap_extension=-2, matrix={}, pssm=[]
       if not pssm:
         match_score= blosum(seq1[i-1],seq2[j-1], matrix);
       else:
-        if len(pssm)<=[i-1]: raise Exception, "ERROR the pssm provided is not long enough... position requested: "+str((i-1))
-        elif not pssm[i-1].has_key(seq2[j-1]): raise Exception, "ERROR key error in pssm. position: "+str((i-1))+' does not have a value for: '+seq2[j-1]
+        if len(pssm)<=[i-1]: raise Exception("ERROR the pssm provided is not long enough... position requested: "+str((i-1)))
+        elif seq2[j-1] not in pssm[i-1]: raise Exception("ERROR key error in pssm. position: "+str((i-1))+' does not have a value for: '+seq2[j-1])
         match_score = pssm[i-1][seq2[j-1]]
 
       score_diagonal=score[i-1][j-1]+match_score
@@ -3101,7 +3254,7 @@ def correct_sequence(seq1, seq2, special_chars=['U']):
         aa2=seq2[index2]
       if aa1!=aa2:
         if aa1 in special_chars:              seq1=seq1[:index1]+aa2+seq1[index1+1:]
-        else: raise Exception, "correct_sequence ERROR the sequences are different not only for special characters: "+seq1+'  !=  '+seq2 
+        else: raise Exception("correct_sequence ERROR the sequences are different not only for special characters: "+seq1+'  !=  '+seq2) 
   return seq1
 
 def dereference(filename):
@@ -3109,7 +3262,7 @@ def dereference(filename):
   If the file provided is not a symbolic link, its absolute path is simply returned. If it does not exists, an exception is raised.
   """
   if not is_file(filename):
-    raise Exception, "dereference ERROR file: "+filename+' was not found '
+    raise Exception("dereference ERROR file: "+filename+' was not found ')
   filename=abspath(filename)
   out_ls=bbash('ls -l "'+filename+'"')
   while out_ls.split()[-2]=='->':
@@ -3130,7 +3283,7 @@ def fastaindex(target_genome, silent=0, force=0):
   If the user has no writing permissions in the folder where the genome file is, the index is created in the temporary folder and it is returned.
   When the index is created, a message is printed using functio write() unless silent=1
     """
-  if '.' in base_filename(target_genome):    index_file=join( target_genome.split('.')[:-1],'.'   )+'.index'
+  if '.' in base_filename(target_genome):    index_file='.'.join( target_genome.split('.')[:-1]   )+'.index'
   else:                                      index_file=target_genome+'.index'
   if is_file(index_file) and not force: return index_file
   temp_index_file=temp_folder+fileid_for_temp_folder(target_genome)+'.index'
@@ -3163,6 +3316,7 @@ def fastafetch(split_folder, chromosome, target_genome, verbose=0, chars_not_all
   temp_filename=temp_folder+'fetching_chromosome.fa'
   if is_file(final_filename):    'file already there'
   else:  
+    #printerr('*** '+fastaindex(target_genome), 1)
     cmnd='fastafetch '+target_genome+' '+fastaindex(target_genome)+' "' +chromosome +'" > "'+  temp_filename+'"' 
     service( '  ...fetching chromosome: '+chromosome )
 #    debug(cmnd)
@@ -3181,7 +3335,7 @@ def fastafetch(split_folder, chromosome, target_genome, verbose=0, chars_not_all
       #debug(cmnd)
       bbash(cmnd, verbose)  
     #checking if there is sequence in temp_folder+'tchrom' 
-    if bbash('head -n2 "'+  temp_filename+'"')=='':      raise Exception, 'ERROR fetching chromosome; command_line: '+cmnd
+    if bbash('head -n2 "'+  temp_filename+'"')=='':      raise Exception('ERROR fetching chromosome; command_line: '+cmnd)
     bbash('mv '+temp_filename+' "'+final_filename+'"' )
   return  final_filename ######## NB different from the function in profiles_classes
 
@@ -3201,10 +3355,10 @@ def fastasubseq(subj_file, start, clength, out_file, pipecommand='', warning=Fal
       ss=bash(cmnd)
       if warning: printerr('Fastasubseq: '+str(old_clength)+' bp not available, cutting the first '+str(clength), 1)
     if ss[0]!=0:
-      raise Exception, "COMMAND "+cmnd+" ERROR in fastasubseq: \""+ss[1]+"\""
+      raise Exception("COMMAND "+cmnd+" ERROR in fastasubseq: \""+ss[1]+"\"")
     return clength    #returning message for how much the sequence was actually cut
-  except Exception, e:
-    raise Exception, "COMMAND "+cmnd+" ERROR in fastasubseq: \""+ss[1]+"\""
+  except Exception as e:
+    raise Exception("COMMAND "+cmnd+" ERROR in fastasubseq: \""+ss[1]+"\"")
     
 
 def fasta(string, char_per_line=60):
@@ -3215,14 +3369,14 @@ def fasta(string, char_per_line=60):
     for cline in string.split('\n'):
       if cline[0]=='>':
         if seq:
-          for i in range(    (len(seq)-1) / char_per_line   +1):
+          for i in range(    (len(seq)-1) // char_per_line   +1):
             out+= seq[i*60:(i+1)*60] +'\n'
 
         out+= cline+'\n'
         seq=''
       else:
         seq+=cline
-    for i in range(   (len(seq)-1) / char_per_line   +1):
+    for i in range(   (len(seq)-1) // char_per_line   +1):
       out+= seq[i*60:(i+1)*60]+'\n'
 
     return out[:-1]
@@ -3234,7 +3388,7 @@ def getfastaxff(text, order=1):     #
     If order=1 it returns an ordered list such as [[title1, seq1, ss1], [title2, seq2, ss2], ...] ;
     if order=0 it returns a dictionary containing {key: title, value: [related sequence }."""
     text.append('!...END...!')
-    alignchars=uppercase+'-*#0. ' #allowed characters in alignments
+    alignchars=ascii_uppercase+'-*#0. ' #allowed characters in alignments
 #    print alignchars
     cont=0      #number of proteins (number of '>title')
     pos={}      #key: protein_number (the cont associated to it); value: cline of the line with >title
@@ -3336,7 +3490,7 @@ def get_sequence_db(title=None):
   if title is None: return sequence_db
   else:             
     try:    return sequence_db[title]
-    except KeyError:  raise Exception, "MMlib - sequence_db ERROR cannot find a sequence with this title in memory {0}".format(title)
+    except KeyError:  raise Exception("MMlib - sequence_db ERROR cannot find a sequence with this title in memory {0}".format(title))
   
 
 
@@ -3420,7 +3574,7 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
     else:                            return None
   def __setitem__(self, key, value):     self.__dict__[key]=value
   def __str__(self):                     return self.summary()
-  def __nonzero__(self):                 return bool(self.exons)
+  def __bool__(self):                 return bool(self.exons)
   def get(self, attribute):
     """ shortcut to get an attribute.. if not present, returns None (does not raise exception).
     """
@@ -3509,18 +3663,20 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
     return self.phases[exon_index]
     
   
-  def load_gff(self, gff_file, tag='cds', check_sec_pos=True, keep_program=False, parse_keywords=False, keep_tag=False):
+  def load_gff(self, gff_file, tag='cds', check_sec_pos=True, keep_program=False, parse_keywords=False, keep_tag=False, process_line=None):
     """can accept as input direclty text, or path to a file, or a file handler; tag=* means any tag
     If check_sec_pos==True (default), then "Sec_position:" (as present in selenoprofiles gffs) are read from the gff input and this information is stored into the .sec_pos attribute.
     If keep_program==True (not default), a .program attribute is used to keep the program field of the gff being loaded (2nd field)
-    If parse_keywords==True (not default), the 9th field of the gff is searched for expressions like:   SOMEKEY:VALUE ; for each one found, a .SOMEKEY attribute is created and assigned to VALUE, taking care of converting VALUE to the appropriate type (string, number, float). A .keywords attribute is created to keep the list of attribute names added this way.
+    If parse_keywords==True (not default), the 9th field of the gff is searched for expressions like:   SOMEKEY:VALUE ; for each one found, a .SOMEKEY attribute is created and assigned to VALUE, taking care of converting VALUE to the appropriate type (string, number, float). A .keywords attribute is created to keep the list of attribute names added this way. You may specify another separator instead of ":" as argument of parse_keywords, as long as just one will be found per text block.
+    For maximum flexibility, you have the process_line keyword. You can provide a function that accepts two arguments: a list of the fields (the result of line.split('\t' on the current line)  and  the self gene object being filled. In this way you can keep any other attribute in the line you're interested into.
     """
+    if parse_keywords==True: parse_keywords=':'
     if type(gff_file)==str and os.path.isfile(gff_file):
       gff_lines=open(gff_file, 'r').readlines()
       self.id=gff_file
-    elif type(gff_file)==file:
-      gff_lines=gff_file.readlines()
-      self.id=gff_file.name
+    # elif type(gff_file)==file:
+    #   gff_lines=gff_file.readlines()
+    #   self.id=gff_file.name
     else: #string
       gff_lines=gff_file.split('\n')
     try:
@@ -3543,24 +3699,26 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
             if parse_keywords and len(splt)>8:
               commentsplt=splt[8].split()
               for word_index, word in enumerate(commentsplt):
-                if word.count(':')==1:
-                  keyword=word.split(':')[0]
-                  if word.endswith(':'):  value=option_value(commentsplt[word_index+1])
-                  else:                   value=option_value(word.split(':')[1])
+                if word.count( parse_keywords  )==1:
+                  keyword=word.split(parse_keywords)[0]
+                  if word.endswith(parse_keywords):  value=option_value(commentsplt[word_index+1])
+                  else:                   value=option_value(word.split(parse_keywords)[1])
                   self[keyword]=value
                   if not hasattr(self, 'keywords'): self['keywords']=[]
                   self['keywords'].append(keyword)
 
-            if keep_program:                 self['program']=line.split('\t')[1]
-            if keep_tag:                     self['tag']=line.split('\t')[2]
-    except Exception, e:                     raise Exception, "ERROR loading gff: "+str(gff_file)+' '+str(e)
+            if keep_program:                 self['program']=splt[1]
+            if keep_tag:                     self['tag']=splt[2]
+            if not process_line is None:     process_line(splt, self)
+
+    except Exception as e:                     raise Exception("ERROR loading gff: "+str(gff_file)+' '+str(e))
   load=load_gff
   
   def add_exon(self, start, stop):
     """ usage: gene_obj.add_exon(start, stop) where start<stop. exons can be added in any order, they will be placed in order.
     """
     if stop<start:
-      raise Exception, "gene->add_exon ERROR stop must be > than start. called with arguments: "+str(start)+' '+str(stop)
+      raise Exception("gene->add_exon ERROR stop must be > than start. called with arguments: "+str(start)+' '+str(stop))
     index_to_append=0
     if self.strand=='+':
       while index_to_append<len(self.exons) and self.exons[index_to_append][0]<start:
@@ -3656,7 +3814,7 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
     while first_exon_index<len(self.exons) and self[first_exon_index][1] - self[first_exon_index][0]+1 +length_of_previous_exons   <=  start_subseq-1 : #exiting this loop, the start of secis is included in this exon
       length_of_previous_exons+=  self[first_exon_index][1]-self[first_exon_index][0]+1
       first_exon_index+=1
-    if first_exon_index>=len(self.exons):      raise Exception, "ERROR subseq function called with start too high for this gene object: "+gene.summary(self)
+    if first_exon_index>=len(self.exons):      raise Exception("ERROR subseq function called with start too high for this gene object: "+gene.summary(self))
     
     #print "first_exon_index:"+str(first_exon_index)
     if self.strand=='+':  
@@ -3667,7 +3825,7 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
       while remaining_length :
         #print "remaining_length"+str(remaining_length)
         current_exon+=1
-        if current_exon>=len(self.exons):          raise Exception, "ERROR subseq function called with length too high for this gene object."
+        if current_exon>=len(self.exons):          raise Exception("ERROR subseq function called with length too high for this gene object.")
         out_gene.add_exon(  self[current_exon][0]  ,        min(  self[current_exon][0]+remaining_length-1 ,  self[current_exon][1]  )        )
         remaining_length -= (out_gene[-1][1]-out_gene[-1][0]+1)
 
@@ -3680,7 +3838,7 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
         #print "remaining_length"+str(remaining_length)
         current_exon+=1
         if current_exon>=len(self.exons):
-          raise Exception, "ERROR subseq function called with length too high for this gene object."
+          raise Exception("ERROR subseq function called with length too high for this gene object.")
         out_gene.add_exon(    max(  self[current_exon][1]-(remaining_length-1) ,  self[current_exon][0]  )    , self[current_exon][1]     )
         remaining_length -= (out_gene[-1][1]-out_gene[-1][0]+1)      
 
@@ -3779,7 +3937,7 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
     It the output is "true", actually te distance between the two genes is reported. If the two genes are exactly adjacent, the distance reported is 1 (to avoid a 0 in a bool evaluation). If max_overlap is not 0, in case this rescues an evaluation , the n of bases in overlap are returned as a negative value. 
     NOTE: the chromosome attribute is not checked
      """
-    if self.strand!=other_g.strand:       raise Exception, "ERROR is_upstream_of function: genes are not on the same strand"
+    if self.strand!=other_g.strand:       raise Exception("ERROR is_upstream_of function: genes are not on the same strand")
     if self.strand=='+':                  dist= other_g.exons[0][0]-self.exons[-1][1]
     elif self.strand=='-':                dist= self.exons[-1][0]-other_g.exons[0][1]
 
@@ -3801,7 +3959,7 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
       if   self.strand=='+':  return self.extend(left=up, right=down, inplace=inplace, minimal=minimal)
       elif self.strand=='-':  return self.extend(left=down, right=up, inplace=inplace, minimal=minimal)
 
-    if not self.exons: raise Exception, "gene->extend ERROR can't extend an empty gene! no exons were found for "+str(self.id)
+    if not self.exons: raise Exception("gene->extend ERROR can't extend an empty gene! no exons were found for "+str(self.id))
     if inplace:     g=self 
     elif  minimal:  
       g=gene(chromosome=self.chromosome, strand=self.strand, target=self.target)
@@ -3840,7 +3998,7 @@ merge_genes(gene_list)       merge a list of genes to remove redundancy. It has 
       msg='removed exons: '
       for k in sorted(to_remove.keys()):
         msg+=str(k)+' ('+str(self.exons[k][0])+','+str(self.exons[k][1])+') '
-      self.remove_exon( to_remove.keys() ) 
+      self.remove_exon( list(to_remove.keys()) ) 
       return msg
     return modified
 
@@ -3897,7 +4055,7 @@ Lastly, if you defined an id which is not SUM or LONGEST, it becomes the id of r
         out_gene.remove_exon(o[0]) #removing all overlapping exons in out_gene
       out_gene.add_exon(start, end)
 
-    if not keyargs.has_key('id'):   keyargs['id']=id
+    if 'id' not in keyargs:   keyargs['id']=id
     for k in keyargs:
       if keyargs[k]=='SUM':
        out_gene[k]= str(self[k])+'_+_'+str(geneobj[k])
@@ -3959,7 +4117,7 @@ Lastly, if you defined an id which is not SUM or LONGEST, it becomes the id of r
       if intron_start == intron_end+1: 
         ## adjacent exons! 
         if skip_null_introns: continue
-        raise Exception, "gene->introns  ERROR there are adjacent exons! cannot return a null intron!! Use skip_null_introns=True to tolerate this and skip these introns"
+        raise Exception("gene->introns  ERROR there are adjacent exons! cannot return a null intron!! Use skip_null_introns=True to tolerate this and skip these introns")
       g.add_exon(intron_start, intron_end)
     return g          
        
@@ -3978,7 +4136,7 @@ By default output is tab-separated; use sep==' ' to produced space separated
     if exon_index is None: considered_exons=self.exons
     else:                  
       try:   considered_exons=self.exons[exon_index]
-      except IndexError: raise Exception,"gene->bed ERROR exon index is invalid! {0} Gene: {1}".format(exon_index, self.header())
+      except IndexError: raise Exception("gene->bed ERROR exon index is invalid! {0} Gene: {1}".format(exon_index, self.header()))
     for start, end in considered_exons: 
       out+='\n{1}{0}{2}{0}{3}'.format(sep, self.chromosome, start, end)
       if not show_id:        break
@@ -4044,7 +4202,7 @@ Last field overrides the id and the comment arguments """
     no_frame: False --> assume this gene is protein coding, so we derive the information of the frame and we feed it to geneid,
               True  --> if this is not a protein coding gene structure, set frame column to ".", which is equivalent to set it to unknown 
     """
-    if type(score)==list and len(score)!= len(self.exons): raise Exception, "gene->geneid_gff ERROR list of scores provided does not have exactly a score for each exon"
+    if type(score)==list and len(score)!= len(self.exons): raise Exception("gene->geneid_gff ERROR list of scores provided does not have exactly a score for each exon")
     if id is None: its_id=str(self.id)
     else:          its_id=id
     if not program and self['program']:      program=self['program']
@@ -4057,7 +4215,7 @@ Last field overrides the id and the comment arguments """
       if score is None: score_txt='.'
       elif type(score) in [float, int]:   score_txt=str(round(score, 2))
       elif type(score)==list:             score_txt=str(round(score[index], 2))
-      else:          raise Exception, "gene->geneid_gff ERROR score not accepted: "+str(score)
+      else:          raise Exception("gene->geneid_gff ERROR score not accepted: "+str(score))
       
       if no_frame:   frame_txt= '.'
       else:          
@@ -4086,7 +4244,7 @@ The argument keep_seq, if True, sets the sequence of the new object as its .seq 
    """
     if chromosome_length is None: 
       try:    chromosome_length=chromosome_lengths[self.chromosome]
-      except: raise Exception, "extend_orf ERROR you must provide chromosome_length as argument; this may be skipped if chromosome_lengths is defined in MMlib and has self.chromosome as key. But this chromosome was not found: "  +str(self.chromosome)
+      except: raise Exception("extend_orf ERROR you must provide chromosome_length as argument; this may be skipped if chromosome_lengths is defined in MMlib and has self.chromosome as key. But this chromosome was not found: "  +str(self.chromosome))
     if not hasattr(self, 'original_bounds'): self.original_bounds=self.boundaries()
     allowed_letters='ATGC'
       ### extending and getting sequence. Doing it at once to avoid calling get_seq multiple times.
@@ -4179,7 +4337,7 @@ The argument keep_seq, if True, sets the sequence of the new object as its .seq 
           raise
       else:
         try:      out+=' '+k+':'+str(self[k])
-        except:   raise Exception, "gene->header ERROR can't find field: "+str(k)+' in gene with id '+str(self.id)
+        except:   raise Exception("gene->header ERROR can't find field: "+str(k)+' in gene with id '+str(self.id))
     
     return out
     
@@ -4219,7 +4377,7 @@ The argument keep_seq, if True, sets the sequence of the new object as its .seq 
   def add_exons_from_positions_summary(self, pos_summ):
     """ Read an uncompressed  positions summary once produced by the above function and add to the self object all exons in it. If the summary is compressed, an exception is raised """
     for piece in pos_summ.split(','):
-      if piece=='...': raise Exception , "gene->add_exons_from_positions_summary ERROR can't load exons from a compressed positions summary!"
+      if piece=='...': raise Exception("gene->add_exons_from_positions_summary ERROR can't load exons from a compressed positions summary!")
       start= int(piece.split('-')[0]) ; end=int(piece.split('-')[1])
       self.add_exon(start, end)
 
@@ -4236,14 +4394,14 @@ The argument keep_seq, if True, sets the sequence of the new object as its .seq 
 
   def fast_sequence(self):
     """ Can be used only if the target file for this gene is loaded in memory in the sequence_db object (see function load_sequence_db). provides a much faster way to get sequences than method fasta_sequence. returns string with the sequence """    
-    if not sequence_db.has_key(self.chromosome): raise Exception, "ERROR fast_sequence() cannot find chromosome identifier: "+str(self.chromosome)
+    if self.chromosome not in sequence_db: raise Exception("ERROR fast_sequence() cannot find chromosome identifier: "+str(self.chromosome))
     seq_out=''
     if self.strand=='-':
       for start, end in reversed(self.exons):      seq_out+= sequence_db[self.chromosome] [ start-1:end ]      
       seq_out= reverse_complement(seq_out)
     else:
       for start, end in self.exons:      seq_out+= sequence_db[self.chromosome] [ start-1:end ]
-    if len(seq_out)!=self.length(): raise Exception, "ERROR fast_sequence() wrong sequence length in memory! aborting "
+    if len(seq_out)!=self.length(): raise Exception("ERROR fast_sequence() wrong sequence length in memory! aborting ")
     return seq_out
 
   def fasta_sequence(self, to_file='', target='', chromosome_file='', split_exons=False, title=''):
@@ -4259,14 +4417,15 @@ The argument keep_seq, if True, sets the sequence of the new object as its .seq 
       
     if not chromosome_file and not target and not self.target :      
       if 'reference_genome_filename' in globals() and is_file(reference_genome_filename):        target=reference_genome_filename
-      else:       raise Exception, "gene-> fasta_sequence ERROR the target is not defined "
+      else:       raise Exception("gene-> fasta_sequence ERROR the target is not defined ")
     elif not chromosome_file and not target:      target=self.target
     if chromosome_file:
-      if not is_file(chromosome_file):       raise Exception, "gene-> fasta_sequence ERROR the chromosome_file "+chromosome_file+" was not found"
+      if not is_file(chromosome_file):       raise Exception("gene-> fasta_sequence ERROR the chromosome_file "+chromosome_file+" was not found")
       chrom_file=chromosome_file
     else:      chrom_file=fastafetch(split_folder, self.chromosome, target)
     if not to_file:      file_out=temp_folder+'gene_fasta_seq'
     else:                file_out=to_file
+
     bbash('>'+file_out)      
 
     if title=='fasta_title':             title=self.fasta_title()
@@ -4284,7 +4443,7 @@ The argument keep_seq, if True, sets the sequence of the new object as its .seq 
       for exon_index in range(len(self.exons)):
 
         start, stop = self.exons[exon_index]
-        this_title=title.split()[0]+'_EXON'+str(exon_index+1)  +' '*int(  len(title.split())>1 )+   join(title.split()[1:], ' ')
+        this_title=title.split()[0]+'_EXON'+str(exon_index+1)  +' '*int(  len(title.split())>1 )+   ' '.join(title.split()[1:])
 
         bbash('echo ">'+this_title+'" >> '+file_out)    
         if self.strand=='+':          fastasubseq(chrom_file, start-1, stop-start+1, file_out, pipecommand=" | gawk 'NR>1' >") #appending
@@ -4293,8 +4452,9 @@ The argument keep_seq, if True, sets the sequence of the new object as its .seq 
           bbash("fastarevcomp "+temp_folder+"gene_fasta_seq_to_revcomp   "+"| gawk 'NR>1' "+" >> "+file_out) 
 
     if not to_file:
-      if not split_exons:        return parse_fasta(file_out).all()[0]
-      else:                      return parse_fasta(file_out).all()
+      # 2022
+      if not split_exons:        return [i for i in parse_fasta(file_out)][0]
+      else:                      return [i for i in parse_fasta(file_out)]
 
 def intersection_of(range1, range2):
   """assuming they are overlapping, and that they're like [start, stop]  with start < stop"""
@@ -4314,10 +4474,10 @@ def get_gff_format(gff_file):
       gff_format='selenoprofiles2_gff'
   elif gff_file.endswith('.gff'):   gff_format='gff'
   if gff_format:    return gff_format
-  else:             raise Exception, "ERROR unknown gff format for file: "+gff_file
+  else:             raise Exception("ERROR unknown gff format for file: "+gff_file)
 
 
-def load_all_genes(gff_file=None, tag='cds', get_id='', add=None, is_sorted=False, **load_gff_args):
+def load_all_genes(gff_file, tag='cds', get_id='', add=None, is_sorted=False, **load_gff_args):
   """ load and returns all genes from a gff file, determining which line belong to which gene using the function get_id, given as input.
   This function must take a line as input and return its id, which is the same for lines describing the same gene object to be loaded. If not provided, it uses defaults function which depend on the extension of the file loaded
   Argument add can be provided: a function that takes the string of gff lines and the gene object, and may manipulate the gene object reading information from the lines.
@@ -4340,9 +4500,9 @@ def load_all_genes(gff_file=None, tag='cds', get_id='', add=None, is_sorted=Fals
     id2lines_list={}
     for line in cfile:        
       line=line.strip()      #;print [line]
-      if not line[0]=="#" and (tag=='*' or lower(line.split('\t')[2]) == lower(tag) ):
+      if line and not line[0]=="#" and (tag=='*' or lower(line.split('\t')[2]) == lower(tag) ):
         the_id=uniqid_function(line)
-        if not id2lines_list.has_key(the_id): id2lines_list[the_id]=''
+        if the_id not in id2lines_list: id2lines_list[the_id]=''
         id2lines_list[the_id]+=line +'\n'
     for the_id in sorted( id2lines_list.keys() ):
       gff_lines= id2lines_list[the_id]
@@ -4373,8 +4533,8 @@ def load_all_genes(gff_file=None, tag='cds', get_id='', add=None, is_sorted=Fals
                 gff_lines=''
               current_id=new_id
             gff_lines+=cline
-      except Exception, e:
-        print "ERROR loading gff  line: "+cline+" ### "+str(e)
+      except Exception as e:
+        print("ERROR loading gff  line: "+cline+" ### "+str(e))
         raise
       cline=cfile.readline()
     #last entry
@@ -4406,43 +4566,69 @@ def order_genes_for_chr_pos(x, y):
   if x.chromosome!=y.chromosome:    return cmp(x.chromosome, y.chromosome)  
   else:                             return cmp(x.boundaries()[0], y.boundaries()[0])
   
-try:   
-  from pygraph.classes.graph import graph
-  from pygraph.algorithms.accessibility import connected_components
+try:
+  #2022
+  # pip install git+https://github.com/jciskey/pygraph
+  #from pygraph.classes import UndirectedGraph as graph
+  #from pygraph.functions import connected_components
+  
+  #from pygraph.classes.graph import graph
+  #from pygraph.algorithms.accessibility import connected_components
 
-  class gene_overlap_graph(graph):
+  import networkx 
+
+  #2022
+
+  class gene_overlap_graph(networkx.Graph):
     """ Class to store overlaps between gene classes. Can't be initialized manually, it's only returned by function genes_overlap """
+    
     def are_overlapping(self, g1, g2):
       """ Tell if gene1 and gene2 (arguments) are overlapping, meaning, are connected in the graph"""
-      return g2 in self.node_neighbors[g1]
+      #return g2 in self.node_neighbors[g1]
+      return self.has_edge(g1, g2)       
       
     def all_overlapping_with(self, g1):
       """ Return the list of genes overlapping with argument g1"""
-      return self.node_neighbors[g1]
+      return [i for i in self.neighbors(g1)]
+      #return self.node_neighbors[g1]
+
+    # def node2connected_components(self):
+    #   """ Build and returns a dictionary like: {a: 1, b: 1, c: 1, d: 1, e: 2, f: 2} 
+    #   where keys= nodes, values= index of connected component"""
+    #   d={}
+    #   for i, sset in  enumerate(networkx.connected_components(self)):
+    #     for n in sset:
+    #       d[n]=i
+    #   return d
       
     def overlap_clusters(self, min_size=1, sort=True):
       """ returns a list of lists of genes overlapping each other.   
 the genes are not required to be all overlapping to each other (e.g.   g1 overlaps g2 ;   g2 overlaps g3;    [ g3 do not overlap g1] -->  [g1, g2, g3] will be returned
 Cluster minimal size is two. output list is sorted to have biggest clusters first, unless sort==False
       """
-      cc= connected_components(self)  ## e.g .{a: 1, b: 1, c: 1, d: 1, e: 2, f: 2}
-      if min_size>=2:
-      ## removing clusters of size 1
-        for g in self.nodes:
-          if not self.all_overlapping_with(g): del cc[g]
-      ## here cc has already at least two elements with same label, meaning: gene not overlapping with anything are not here
-      ##### transforming label hash such as cc in lists of elements to output  
-      connected_comp_lists_hash={}
-      for k in cc: 
-        if not connected_comp_lists_hash.has_key(   cc[k]   ):   connected_comp_lists_hash[ cc[k] ]= []
-        connected_comp_lists_hash[ cc[k] ].append( k )  
+      # cc= self.node2connected_components()  ## e.g .{a: 1, b: 1, c: 1, d: 1, e: 2, f: 2}
+      # if min_size>=2:
+      # ## removing clusters of size 1
+      #   for g in self.nodes:
+      #     if not self.all_overlapping_with(g):
+      #       del cc[g]
+      # ## here cc has already at least two elements with same label, meaning: gene not overlapping with anything are not here
+      # ##### transforming label hash such as cc in lists of elements to output  
+      # connected_comp_lists_hash={}
+      # for k in cc: 
+      #   if cc[k] not in connected_comp_lists_hash:   connected_comp_lists_hash[ cc[k] ]= []
+      #   connected_comp_lists_hash[ cc[k] ].append( k )  
         
-      out=connected_comp_lists_hash.values()
-      if min_size>=3:         out = [v for v in out if len(v)>=min_size]
+      # out=list(connected_comp_lists_hash.values())
+      # if min_size>=3:         out = [v for v in out if len(v)>=min_size]
+      out=[ list(sset) for sset in networkx.connected_components(self) if len(sset)>=min_size ]      
       if sort:                out.sort(key=len)
       return out
  
-except: pass
+except:
+  raise
+  #2022
+  #pass
 
 def bedtools_intersect(gene_list, strand=True, options={}): ## implicit:{'s':True} if strand==True
   """ Open a temp file preparing the input to bedtool intersect, runs it and returns a filehandler on the result. The file is provided to bedtools both as input A and input B, to compute all against all overlaps. Basic commadnline executed: #bedtool intersect -a ALL_GENES.fa -b ALL_GENES.fa  -wa -wb
@@ -4453,10 +4639,10 @@ def bedtools_intersect(gene_list, strand=True, options={}): ## implicit:{'s':Tru
   global temp_folder;   temp_overlap_file= temp_folder+'gene_overlap_file.bed'
   test_writeable_folder(temp_folder, 'temp folder ! Not defined maybe? [Use set_local_folders(temp_folder)]' )
   temp_overlap_file_h= open(temp_overlap_file, 'w')
-  for g_index, g in  enumerate(gene_list):     print >> temp_overlap_file_h, g.bed( show_id = str(g_index), strand=strand )
+  for g_index, g in  enumerate(gene_list):     print(g.bed( show_id = str(g_index), strand=strand ), file=temp_overlap_file_h)
   temp_overlap_file_h.close()  
   bedtools_intersect_command= "bedtools intersect {1} -wa -wb -a {0} -b {0} ".format(temp_overlap_file, {True:'-s', False:''}[bool(strand)])
-  for k in options.keys():     
+  for k in list(options.keys()):     
     bedtools_intersect_command+='-'+str(k)+' '
     if not options[k]==True:   bedtools_intersect_command+=str(options[k])+' '
 #  print bedtools_intersect_command
@@ -4481,7 +4667,8 @@ def gene_clusters(gene_list, strand=True):
   for line in bp.stdout:
 #    print line
     splt=line.rstrip().split('\t')
-    id_left = splt[3]; id_right= splt[9]
+    if strand:    id_left = splt[3]; id_right= splt[9]
+    else:         id_left = splt[3]; id_right= splt[7]
     if   id_left != id_right:
       if   (  not id_left in geneid2cluster_index )  and  ( not id_right in geneid2cluster_index ):  #new cluster
         cluster_index2geneids [cluster_index] = [id_left, id_right]
@@ -4520,7 +4707,7 @@ def gene_clusters(gene_list, strand=True):
   return gene2cluster, cluster2genes
 
 
-def remove_overlapping_gene_clusters(gene_list,  scoring=len,  cmp_fn=None, phase=False, strand=True, out_removed_genes=[], remember_overlaps=False, verbose=False, fix_ties=True):
+def remove_overlapping_gene_clusters(gene_list,  scoring=len,  cmp_fn=None, phase=False, strand=True, out_removed_genes=[], remember_overlaps=False, verbose=False, fix_ties=True,  overlap_fn=None  ):
   """ Returns a reduced version of the list in input, removing genes that overlaps.
   When two genes overlap, a score is assigned to each gene to decide which to keep -- similarly to the key argument to sort, you can provide a function as argument of scoring. by default, it's the gene lenght. Alternatively, you can use cmp_fn in a similar fashion to cmp in sort. It must accept two gene arguments, and return -1 if you want to keep the first argument, +1 if you want to keep the last one.  
   Important: when you use cmp_fn, take care of ties! don't let python decide, or your results may not be reproducible. when scoring is chosen, this is avoided with a trick here, which adds very small quantities (max 0.001) to the scores of each gene object which depend on their ids. 
@@ -4534,13 +4721,15 @@ def remove_overlapping_gene_clusters(gene_list,  scoring=len,  cmp_fn=None, phas
     a_list=[]
     remove_overlapping_genes(gene_list, out_removed_genes=a_list)
     # now a_list contains the gene removed.
-  When you use the out_removed_genes argument, you may want to know the correspondance between the genes removed and the ones kept, without recomputing overlaps. If you use remember_overlaps=True, the attribute .overlapping will be added to the removed genes; this is a link to the gene kept (which is present in the output, returned list)   """
+  When you use the out_removed_genes argument, you may want to know the correspondance between the genes removed and the ones kept, without recomputing overlaps. If you use remember_overlaps=True, the attribute .overlapping will be added to the removed genes; this is a link to the gene kept (which is present in the output, returned list)
+   Normally the overlaps between any two genes is checked through two steps; first, the bedintersect tool, which can take into account the strand or not (depending on the argument of strand); second, the gene.overlaps_with function, which can take into account also the phase (frame). You can replace this second check with any given function providing it as argument of overlap_fn; this must take two gene arguments, and return True or False. If overlap_fn is provided, then the phase argument is ignored.
+   """
   outlist=[]
   #overlaps_graph= genes_overlap(gene_list, phase=phase, strand=strand)
   #clusters= overlaps_graph.overlap_clusters(min_size=1)
-  gene2cluster, cluster2genes = gene_clusters( gene_list )
+  gene2cluster, cluster2genes = gene_clusters( gene_list, strand=strand )
 
-  for cluster_id  in cluster2genes.keys():
+  for cluster_id  in list(cluster2genes.keys()):
     cluster= cluster2genes[cluster_id]
     #cluster is a gene list 
     ## we do the following:  we take the best scoring gene, we put this in the outlist, we throw away everything that overlaps with it, and we repeat until we finished the cluster
@@ -4562,7 +4751,8 @@ def remove_overlapping_gene_clusters(gene_list,  scoring=len,  cmp_fn=None, phas
       outlist.append(best_gene)
       for g in cluster: 
         if g!=best_gene:
-          if not best_gene.overlaps_with(g, phase=phase, strand=strand):
+          they_overlap = best_gene.overlaps_with(g, phase=phase, strand=strand) if overlap_fn is None else  overlap_fn(best_gene, g)
+          if not they_overlap: 
             ## gene that we're keeping for next cycle
             genes_not_overlapping_best_gene.append(g)
           else:  
@@ -4578,16 +4768,30 @@ def remove_overlapping_gene_clusters(gene_list,  scoring=len,  cmp_fn=None, phas
 #get_gene_overlaps(gs)
   
 def genes_overlap(gene_list, phase=False, strand=True):
-  try:    overlaps_graph= gene_overlap_graph()
-  except NameError:  raise ImportError, "ERROR pygraph modules not installed! can't initialize subclass gene_overlap_graph "
+  try:
+    overlaps_graph= gene_overlap_graph()
+  except NameError:
+    raise
+  #2022
+  #ImportError("ERROR pygraph modules not installed! can't initialize subclass gene_overlap_graph ")
+  
   list_no_empty=[g for g in gene_list if g]
-  overlaps_graph.add_nodes(list_no_empty)
-  ordered_gene_list= sorted(   list_no_empty, cmp=order_genes_for_chr_strand_pos )  
+
+  # 2022
+  #overlaps_graph.add_nodes(list_no_empty)
+  overlaps_graph.add_nodes_from(list_no_empty)
+  
+  #ordered_gene_list= sorted(   list_no_empty, cmp=order_genes_for_chr_strand_pos )     ### old: doesn't work if strand==False
+  ordered_gene_list= sorted(   list_no_empty, key=cmp_to_key(order_genes_for_chr_pos))
+  
   for index1, g1 in enumerate(ordered_gene_list):
     right_boundary_g1=g1.boundaries()[1]
     index2=index1+1
     while  index2<len(ordered_gene_list) and   ordered_gene_list[index2].boundaries()[0] <= right_boundary_g1:
-      if g1.overlaps_with(  ordered_gene_list[index2],  phase=phase, strand=strand ):        overlaps_graph.add_edge( (g1, ordered_gene_list[index2]) )     
+      if g1.overlaps_with(  ordered_gene_list[index2],  phase=phase, strand=strand ):
+        #2022
+        #overlaps_graph.add_edge( (g1, ordered_gene_list[index2]) )             
+        overlaps_graph.add_edge( g1, ordered_gene_list[index2] )     
       index2+=1  
   return overlaps_graph
 
@@ -4614,7 +4818,8 @@ def remove_overlapping_genes(gene_list,  scoring=len,  cmp_fn=None, phase=False,
     ## we do the following:  we take the best scoring gene, we put this in the outlist, we throw away everything that overlaps with it, and we repeat until we finished the cluster
     while cluster:
       if cmp_fn:     
-        cluster.sort(cmp=cmp_fn)
+        cluster.sort(key=cmp_to_key(cmp_fn))
+        #cluster.sort(cmp=cmp_fn)
       else:          
         #I'm not giving directly scoring to sort because this may lead to different results in different runs, because of ties ( only if fix_ties is true           )
         hash_obj_to_score={}
@@ -4645,7 +4850,11 @@ from hashlib import md5
 
 def string_hashed_to_number(astring, n_max=1.0):
   """ convert a string to a hashed number ranging from 0 to n_max (def:1) """
-  m = md5(astring)
+  #print([astring])
+  #2022
+  #m = md5(astring)
+  m = md5(astring.encode('utf-8'))
+  
   number= int(   m.hexdigest(),   16  )  #getting the number corresponding to the hex code returned by the md5 hashing functino
   higher_possible_number= int( 'f'*32  ,   16  ) #highest possible number is all 'f' chars, and the string returned by hex digest is 32 chars long
   out= number*float(n_max) / higher_possible_number
@@ -4658,9 +4867,9 @@ def merge_genes(gene_list, phase=False, inplace=False, mode='merge', id_mode='SU
   When two genes are merged, the one which is kept will keep a list of the genes that were removed in its favor, and the overlaps will be computed also on this list of genes which it represents. For this reason, this may happen:   g1 overlaps with g2 (and has priority over it).  g2 overlaps with g3 but not with g1.       -->    g1 will be kept and g2 and g3 are removed -- even if g1 was not overlapping with g3.   This method ensure consistency of results. 
   anyway, if you want to turn this off, use strict_overlap=True. in this case, the overlaps are not computed with represented genes
   """
-  if not strand: raise Exception, "ERROR this function cannot be used to merge genes on different strands! Please convert all of them to + and rerun."
+  if not strand: raise Exception("ERROR this function cannot be used to merge genes on different strands! Please convert all of them to + and rerun.")
   if not mode in ['merge', 'longest'] and type(mode)!=type(lambda x:x): #the mode can also be a function telling which gene to keep when two overlap
-    raise Exception, "merge_genes function, mode not recognized : "+str(mode)
+    raise Exception("merge_genes function, mode not recognized : "+str(mode))
   exon_list=[] #### I build an exon list which I can order by position start, so then I can exploit the fact the only adiacent exons can overlap. 
   for g_index, g in enumerate(gene_list):
     for st, end in g.exons:
@@ -4747,7 +4956,7 @@ def merge_genes(gene_list, phase=False, inplace=False, mode='merge', id_mode='SU
       final_gene=gene_list[ gene_list[g_index].merged_in ]
       if remember_overlaps:      gene_list[g_index].overlapping= final_gene
 
-      if bool(gene_list[g_index].representing_genes): raise Exception, "merge don't work"
+      if bool(gene_list[g_index].representing_genes): raise Exception("merge don't work")
       removed_genes.append(gene_list[g_index])
       removed_gene_indexes.append(g_index)
       del gene_list[g_index]['merged_in']
@@ -4773,7 +4982,7 @@ def get_species_from_library(species_name, library=False):
   if not library: library=species_library
   cmnd='gawk  -v input="'+species_name+'"'+""" -F"\\t" '{ if ($7=="scientific name"){ sc_name=$3; sc_name_taxid=$1};  if ($3 == input){ taxid=$1 }; if (taxid && taxid==sc_name_taxid){print taxid "\\t" sc_name; exit}   }'    """+library
   b=bash(cmnd)
-  if b[0]: raise notracebackException, "ERROR searching species. something wrong in  command: "+cmnd
+  if b[0]: raise notracebackException("ERROR searching species. something wrong in  command: "+cmnd)
   if not b[1]: return None
   else:        return b[1].split('\t')
 
@@ -4787,7 +4996,7 @@ def get_taxids_from_ncbi_db(   scientific_name_list,    ncbi_db='/users/rg/didac
 
   if temp_dir is None: temp_dir = temp_folder
   t_file=    temp_dir+'/sc_names_w_tab.txt' ; t_file_h=  open(t_file, 'w')
-  for sc_name in scientific_name_list:    print >> t_file_h, "|\t"+sc_name+"\t|"
+  for sc_name in scientific_name_list:    print("|\t"+sc_name+"\t|", file=t_file_h)
   t_file_h.close()
   grep_out= temp_dir+'/grep_out'
   bash( 'grep -Ff '+t_file+' ' +ncbi_db+' > '+grep_out)
@@ -4814,14 +5023,17 @@ def get_taxids_from_ncbi_db(   scientific_name_list,    ncbi_db='/users/rg/didac
     if n_ambygous_entries:
       for line in open(ambygous):
         splt = line.split('\t')  
-        if not  ambigous_hash.has_key(splt[2]):  ambigous_hash[  splt[2]   ] =   []
+        if splt[2] not in ambigous_hash:  ambigous_hash[  splt[2]   ] =   []
         ambigous_hash[splt[2]].append(       int(splt[0])    )
     not_found_hash={}
     for n in scientific_name_list:
       if not ( n in out_hash or  n in ambigous_hash): not_found_hash[n]=1
     return out_hash, ambigous_hash, not_found_hash
   return out_hash
-    
+
+
+
+
 class parser(object):
   """ This class handles reading from a text file, typically a sequence file. IT is meant to be a parent class for parsers. 
   Usage: (example with parse_fasta)
@@ -4843,43 +5055,69 @@ class parser(object):
   To build a new parser, define a child class of this superclass and define a parse_next method which parse self.last_line or, in case, the next lines and returns a desired object.
   """
   def __getitem__(self, name):
-    if name in  dir(self):       return self.__dict__[name]
-    else:                        return None
+    if name in  dir(self):
+      return self.__dict__[name]
+    else:
+      return None
+    
   def __setitem__(self, key, value):
     self.__dict__[key]=value
+    
   def __init__(self, filename='',  **keyargs):
-    for key in keyargs:      self[key]=keyargs[key]
-    if filename:             self.load(filename) 
+    for key in keyargs:
+      self[key]=keyargs[key]
+    if filename:
+      self.load(filename)
+      
   def load(self, filename=''):
-    if not filename and self.file and type(self.file) == file: raise Exception, "parser ERROR: trying to load a filehandler which has already finished. Please instanciate another parser"
-    if type(filename)==file:
+    if not filename and self.file and type(self.file) == file:
+      raise Exception("parser ERROR: trying to load a filehandler which has already finished. Please instanciate another parser")
+    if isinstance(filename, io.IOBase):
       self.load_filehandler(filename)
     else: #string
-      self.load_filename(filename) 
+      self.load_filename(filename)
+      
   def load_filename(self, filename=''):
-    if not filename:      filename=self.file.name
+    if not filename:
+      filename=self.file.name
     check_file_presence(filename, 'filename')
     self.file= open(filename, 'r')
     self.last_line=self.file.readline()
+    
   def load_filehandler(self, fileh=''):
     self.file=fileh 
     self.last_line=self.file.readline()
-  def __iter__(self):    return self      
+    
+  def __iter__(self):
+    while self.last_line:
+      yield self.next()
+    # return self.next() #2022
+  
   def all(self):
     outlist=[]
     for i in self:      outlist.append(i)
     if outlist==[None]: return []
     return outlist
+  
   def next(self, skip_comments=True):
-    if self.file.closed:      self.load()
-    if not self.last_line:    self.stop()
-    if skip_comments and not   ( self.__dict__.has_key('skip_comments') and not self['skip_comments'] )  :
-      while self.last_line and (self.last_line[0]=='#'):                self.last_line=self.file.readline()  
-    try:      return self.parse_next()
-    except StopIteration: raise
-    except Exception, e:
-      print "ERROR parsing file: "+self.file.name+' ; line: '+self.last_line
-      raise          
+    if self.file.closed:
+      self.load()
+      
+    if not self.last_line:
+      self.stop()
+      
+    if skip_comments and not   ( 'skip_comments' in self.__dict__ and not self['skip_comments'] )  :
+      while self.last_line and (self.last_line[0]=='#'):
+        self.last_line=self.file.readline()
+        
+    try:
+      return self.parse_next()
+    except StopIteration:
+      raise
+    except Exception as e:
+      print("ERROR parsing file: "+self.file.name+' ; line: '+self.last_line)
+      raise
+    
   def stop(self):
     self.file.close()
     raise StopIteration
@@ -4887,17 +5125,25 @@ class parser(object):
   def parse_next(self):
     """This method is the key of the parser class and must be implemented for each parser. The method should read self.last_line and next line (in case it is necessary). Before returning the desired object, it should move the cursor self.last_line to the next line
     """
-    raise Exception, "ERROR the generic parser class has no parse_next method: you must define it in the metaclass"
+    raise Exception("ERROR the generic parser class has no parse_next method: you must define it in the metaclass")
 
-class parse_fasta(parser):
-  def parse_next(self):
-    title=del_white(self.last_line[1:-1])
-    seq=''
-    self.last_line=self.file.readline()
-    while self.last_line and  self.last_line[0]!='>':
-      seq+=replace_chars(self.last_line, ' \n\r\t', '')
-      self.last_line=self.file.readline()
-    return title, seq    
+# class parse_fasta(parser):
+#   remove_chars=set(['\n', '\r', '\t', ' '])
+#   def parse_next(self):
+#     title=del_white(self.last_line[1:-1])
+#     seq=''
+#     self.last_line=self.file.readline()
+#     while self.last_line and  self.last_line[0]!='>':
+#       seq+=replace_chars(self.last_line, self.remove_chars, '')
+#       self.last_line=self.file.readline()
+#     yield title, seq    
+
+from Bio import SeqIO
+def parse_fasta(filename):
+  with open(filename) as fh:
+    for title, seq in SeqIO.FastaIO.SimpleFastaParser(fh):
+      yield (title, seq)
+
 
 class parse_sam(parser):
   """ Returns a gene object for each line of the sam input. nornmally just positions, strand, chromosome, id and sequence are kept. if you want other attributes, define them as attributes of this parser object. You can have these attributes: 'flag', 'mapq', 'cigar', 'rnext', 'pnext', 'qual'] ( see SAM1 manual)
@@ -4925,6 +5171,7 @@ class parse_sam(parser):
 #class parse_gff(parser):
 #  def parse_next(self):
 
+
 class rnazhit(object):
   """ This class read input from RNAz output as channeled by the program rnazWindows.pl run on clustalw format nucleotide alignments """
 
@@ -4949,8 +5196,8 @@ class rnazhit(object):
     ##checking for missing values
     err_msg=''
     for key in self.features_names:
-      if not self.data.has_key(key): err_msg+=key+', '
-    if err_msg: raise Exception, "rnazhit load ERROR feature"+int(err_msg.count(',')>1)*"s"+" not found: "+err_msg[:-2]
+      if key not in self.data: err_msg+=key+', '
+    if err_msg: raise Exception("rnazhit load ERROR feature"+int(err_msg.count(',')>1)*"s"+" not found: "+err_msg[:-2])
     ### parsing alignment
     while line_index<len(lines) and not lines[line_index].strip().startswith(">"):      line_index+=1
     title, seq, ss= None, None, None
@@ -4971,16 +5218,16 @@ class rnazhit(object):
     #checking evertyhing is there
     n=self.ali.nseq()-1
     if n!= len(self.title2zscore) or n!= len(self.title2mfe) or n!=len(self.title2code) or n!=self.data['Sequences']: 
-      print self.summary()
-      raise Exception, "rnazhit load ERROR some data was not found for all "+str(self.data['Sequences'])
+      print(self.summary())
+      raise Exception("rnazhit load ERROR some data was not found for all "+str(self.data['Sequences']))
 
   def positions(self):
     """ if RNAz was run channeled through rnazWindows (if not, return None) , returns two indexes which are found in the sequence titles; indexes are python style, 0 for first and end not included. e.g. (0, 120) """
-    try:          return  map(int,  self.titles()[0].split('/')[-1].split('-'))
+    try:          return  list(map(int,  self.titles()[0].split('/')[-1].split('-')))
     except:       return None
 
 
-  def __nonzero__(self):                 return bool(self.data)
+  def __bool__(self):                 return bool(self.data)
   def probability(self):
     if not self: return None
     return self.data["SVM RNA-class probability"]
@@ -5066,7 +5313,7 @@ class parse_exonerate_est(parser):
           full_query_block  += query_block
           full_target_block += target_block
 
-        if len(full_query_block)!=len(full_target_block): raise Exception, "ERROR parsing exonerate_dna ! different lengths of full_query_block and full_target_block: \n"+full_query_block+'\n'+full_target_block
+        if len(full_query_block)!=len(full_target_block): raise Exception("ERROR parsing exonerate_dna ! different lengths of full_query_block and full_target_block: \n"+full_query_block+'\n'+full_target_block)
         for index, q_char in enumerate( full_query_block ):
           if q_char in self.allowed_chars and full_target_block[index] != '.':
             ali_query_seq += q_char
@@ -5079,7 +5326,7 @@ class parse_exonerate_est(parser):
           real_tstart = real_tstart-1
           real_tend = real_tend+1
         raw_score=vulgar_line.split()[9]
-        ali=join(vulgar_line.split()[9:], ' ')
+        ali=' '.join(vulgar_line.split()[9:])
         line=cfile.readline()
         # processing considering subseqing
         #now in GFF comment startline 
@@ -5091,7 +5338,7 @@ class parse_exonerate_est(parser):
           while line[0]!='#':
             gff_lines+=line
             line=cfile.readline()
-        else:        raise Exception, 'ERROR no gff ouput in the exonerated file; please run exonerate with --showtargetgff option'
+        else:        raise Exception('ERROR no gff ouput in the exonerated file; please run exonerate with --showtargetgff option')
         while line and line !='-- completed exonerate analysis\n' and line !='C4 Alignment:\n':          line=cfile.readline()  
 
         e=estexoneratehit()
@@ -5177,7 +5424,7 @@ class infernalhit(gene):
 
   def remove_Xs(self, gene_seq=None):
     """This function is for the infernal hits which contain insertions, kept as Xs in the virtual infernalhit object. When run, it interrogates the target file specified in .target and recovers the missing sequence. """
-    if not self.target: raise Exception, "infernalhit -> remove_Xs ERROR the .target attribute is not defined"
+    if not self.target: raise Exception("infernalhit -> remove_Xs ERROR the .target attribute is not defined")
 
     if not gene_seq is None: gene_seq= replace( lower( gene_seq  ), 't', 'u')
     if "x" in self.alignment.seq_of('t'):
@@ -5187,18 +5434,16 @@ class infernalhit(gene):
         if nt=='-': gaps_target+=1
         elif nt=='x': 
           p=pos
-          while p<len(self.alignment.seq_of('t')) and self.alignment.seq_of('t')[p]=='x':
-            p+=1
+          while p<len(self.alignment.seq_of('t')) and self.alignment.seq_of('t')[p]=='x': p+=1
           x_range_start = pos
           x_range_end   = p-1
           break
       x_range = self.subseq( x_range_start-gaps_target+1, x_range_end-x_range_start+1  )
       if gene_seq is None:        
         subseq_from_target= replace( lower( x_range.fasta_sequence()[1]), 't', 'u')
-      else:
-        subseq_from_target=  gene_seq [x_range_start-gaps_target:x_range_end+1-gaps_target]
+      else:                       subseq_from_target=  gene_seq [x_range_start-gaps_target:x_range_end+1-gaps_target] 
       if len(subseq_from_target)!=x_range.length(): 
-        raise Exception, "infernalhit->remove_Xs ERROR the sequence fetched for this hit has wrong length: subseq from target: {0}  range analyzed: {1} ".format(len(subseq_from_target), x_range.length())
+        raise Exception("infernalhit->remove_Xs ERROR the sequence fetched for this hit has wrong length: subseq from target: {0}  range analyzed: {1} ".format(len(subseq_from_target), x_range.length()))
 
       new_seq_target = self.alignment.seq_of('t')[:x_range_start]+subseq_from_target+self.alignment.seq_of('t')[x_range_end+1:]
       self.alignment.set_sequence('t',        new_seq_target       )
@@ -5287,7 +5532,7 @@ class parse_infernal(parser):
   def parse_next(self):
     if    self.infernal_version == '1.0': return self.parse_next_ver1_0()
     elif  self.infernal_version == '1.1': return self.parse_next_ver1_1()
-    else: raise Exception, "ERROR infernal version not recognized or supported: "+str(self.infernal_version)
+    else: raise Exception("ERROR infernal version not recognized or supported: "+str(self.infernal_version))
 
   def parse_next_ver1_1(self):
     while self.last_line and not self.last_line.startswith('>>'):
@@ -5323,10 +5568,14 @@ class parse_infernal(parser):
         self.current_cm = hit_lines[1].split()[0]
         query_seq += ' '.join( hit_lines[1].split()[2:-1] )
         target_seq += ' '.join( hit_lines[3].split()[2:-1] )
-        del hit_lines[0:5]
-        if hit_lines and  hit_lines[0].endswith('RF'):
-          hand_rf += ' '.join( hit_lines[0].split()[0:-1] )
-          del hit_lines[0]
+        ##  new, thanks to didac:
+        del hit_lines[0:4]
+        for next_line in hit_lines:
+          if next_line.endswith('RF'):
+            hand_rf += ' '.join( next_line.split()[0:-1] )
+            break
+        del hit_lines[0:]
+        ##
       if hit_lines: del hit_lines[0]
 
     g.query.chromosome = self.current_cm
@@ -5345,8 +5594,8 @@ class parse_infernal(parser):
         if hand_rf:
           hand_rf = '~'*max([insert_length_query, insert_length_target]) + hand_rf
       else:
-        query_seq = query_seq.split('*')[0]+ insert_length_query*'x'+"-"* (insert_length_target-insert_length_query)   + join( query_seq.split('*')[2:], '*'  )
-        target_seq=target_seq.split('*')[0]+insert_length_target*'x'+"-"*(insert_length_query-insert_length_target)   + join( target_seq.split('*')[2:], '*'  )
+        query_seq = query_seq.split('*')[0]+ insert_length_query*'x'+"-"* (insert_length_target-insert_length_query)   + '*'.join( query_seq.split('*')[2:]  )
+        target_seq=target_seq.split('*')[0]+insert_length_target*'x'+"-"*(insert_length_query-insert_length_target)   + '*'.join( target_seq.split('*')[2:] )
         l_ss_gap=0
         while len(g.ss)>pos_insert+l_ss_gap and g.ss[pos_insert+l_ss_gap]=='~': l_ss_gap+=1
         g.ss = g.ss[:pos_insert]+'~'*max([insert_length_query, insert_length_target])+g.ss[pos_insert+l_ss_gap:]
@@ -5398,10 +5647,10 @@ class parse_infernal(parser):
       #now in ss
       g.ss+=self.last_line.strip()
       self.last_line=self.file.readline()
-      query_seq+= join(self.last_line.split()[1:-1], '')
+      query_seq+= ''.join(self.last_line.split()[1:-1])
       self.last_line=self.file.readline()
       self.last_line=self.file.readline()
-      target_seq+=join(self.last_line.split()[1:-1], '')
+      target_seq+=''.join(self.last_line.split()[1:-1])
       self.last_line=self.file.readline()
       self.last_line=self.file.readline()      
 
@@ -5409,8 +5658,8 @@ class parse_infernal(parser):
       pos_insert=query_seq.find('*')
       insert_length_target=  int( target_seq.split('*[')[1].split(']')[0].strip()  )
       insert_length_query= int( query_seq.split('*[')[1].split(']')[0].strip() )
-      query_seq= query_seq.split('*')[0]+ insert_length_query*'x'+"-"* (insert_length_target-insert_length_query)   + join( query_seq.split('*')[2:], '*'  )
-      target_seq=target_seq.split('*')[0]+insert_length_target*'x'+"-"*(insert_length_query-insert_length_target)   + join( target_seq.split('*')[2:], '*'  )
+      query_seq= query_seq.split('*')[0]+ insert_length_query*'x'+"-"* (insert_length_target-insert_length_query)   + '*'.join( query_seq.split('*')[2:]  )
+      target_seq=target_seq.split('*')[0]+insert_length_target*'x'+"-"*(insert_length_query-insert_length_target)   + '*'.join( target_seq.split('*')[2:])
       l_ss_gap=0
       while len(g.ss)>pos_insert+l_ss_gap and    g.ss[pos_insert+l_ss_gap]=='~': l_ss_gap+=1
       g.ss = g.ss[:pos_insert]+'~'*max([insert_length_query, insert_length_target])+g.ss[pos_insert+l_ss_gap:]
@@ -5551,9 +5800,9 @@ def secis_alignment(secis_list):
     #print secis.seq
     splt=secis.seq.split()
     if len(splt)!=12:
-      raise Exception, "secis_alignment ERROR sequence provided in the secis must be split in the 12 components by white spaces"
+      raise Exception("secis_alignment ERROR sequence provided in the secis must be split in the 12 components by white spaces")
     for i in range(12):
-      if pieces_lengths[i]-len(splt[i])<0: raise Exception, "secis_alignment ERROR pieces length is too short for piece: "+str(i)+' '+str(len(splt[i]))+'>'+str(pieces_lengths[i])
+      if pieces_lengths[i]-len(splt[i])<0: raise Exception("secis_alignment ERROR pieces length is too short for piece: "+str(i)+' '+str(len(splt[i]))+'>'+str(pieces_lengths[i]))
       alignment_pieces[i].add( secis.id, '-'*(pieces_lengths[i]-len(splt[i])) + splt[i] ) #completing seq to desired lenght using gaps
   final_ali=alignment()
   for secis in secis_list:
@@ -5617,7 +5866,7 @@ class blasthit_list(list):
             printerr('blast_list.sort ERROR can\'t obtain the field '+str(key)+' for blasthit '+str(bh), 1)
             raise
 
-          if not self.features[key].has_key(value):    self.features[key][value]=blasthit_list()   #self.features.chromosome['chr1']= blastlist[]
+          if value not in self.features[key]:    self.features[key][value]=blasthit_list()   #self.features.chromosome['chr1']= blastlist[]
           self.features[key][value].append(bh)       # --> so we have a list of every blast hit in the chromsome 1, a list for chromsome 2....        
 
         for value in sorted(self.features[key].keys()):
@@ -5654,15 +5903,15 @@ class species():
     search_results=ncbi_taxonomy.main({'silent':1, 'S':search_string, 'print_opt':1})
     def search_result_to_id(line): return int( line.split()[0] )
     def search_result_to_scientific_name(line): return  del_white(line[:-1].split('->')[1].split('#')[0])
-    if not len(search_results.keys()): 
-      if not silent: raise NameError, "ncbi_taxonomy ERROR can't find species: "+search_string  
-    elif len(search_results.keys())> 1: 
-      taxid=int(min(search_results.keys(), key=lambda x : search_result_to_scientific_name(search_results[x])))
-      if not silent: raise NameError, "ncbi_taxonomy WARNING searching species '"+search_string+"' more than one species found: "+join([ search_result_to_scientific_name(s) for s in search_results ] , ',')
-    self.taxid=search_result_to_id(search_results[search_results.keys()[0]])
+    if not len(list(search_results.keys())): 
+      if not silent: raise NameError("ncbi_taxonomy ERROR can't find species: "+search_string)  
+    elif len(list(search_results.keys()))> 1: 
+      taxid=int(min(list(search_results.keys()), key=lambda x : search_result_to_scientific_name(search_results[x])))
+      if not silent: raise NameError("ncbi_taxonomy WARNING searching species '"+search_string+"' more than one species found: "+','.join([ search_result_to_scientific_name(s) for s in search_results ]))
+    self.taxid=search_result_to_id(search_results[list(search_results.keys())[0]])
     return True
 
-  def __nonzero__(self):
+  def __bool__(self):
     return bool(self.taxid)
     
   def load_from_db(self, db_object):
@@ -5716,7 +5965,7 @@ def unmask_characters(a_string, replace_underscores=False):
   while '{ch' in a_string:
     try: 
       char_n=int(a_string.split('{ch')[1].split('}')[0])
-      a_string=join(a_string.split('{ch'+str(char_n)+'}'), chr(char_n))
+      a_string=chr(char_n).join(a_string.split('{ch'+str(char_n)+'}'))
     except: pass
   return a_string
 
@@ -5735,7 +5984,7 @@ class pfamhit(gene):
     if query_start and query_end:    self.query.add_exon(pfam_start, pfam_end)
 
     self.alignment=alignment()
-    if ali and ali.nseq()!=2: raise Exception, "pfamhit->load ERROR alignment provided can have only two sequences... it has: "+str(ali.nseq())
+    if ali and ali.nseq()!=2: raise Exception("pfamhit->load ERROR alignment provided can have only two sequences... it has: "+str(ali.nseq()))
     self.alignment.add('q', ali.titles()[0])
     self.alignment.add('t', ali.titles()[1])
     
@@ -5772,17 +6021,17 @@ def fasta_next_seq(filehandler, cline=''):
     return None
 def check_file_presence(input_file, descriptor='input_file', exception_raised=Exception):
   if not input_file or not is_file(input_file):
-    raise exception_raised, "ERROR "+descriptor+ ": "+str(input_file) +" not defined or not found. Run with option -h for help."
+    raise exception_raised("ERROR "+descriptor+ ": "+str(input_file) +" not defined or not found. Run with option -h for help.")
 def check_directory_presence(input_file, descriptor='folder', exception_raised=Exception):
   if not input_file or not is_directory(input_file):
-    raise exception_raised, "ERROR "+descriptor+ ": "+str(input_file) +" not defined or not found. Run with option -h for help."
+    raise exception_raised("ERROR "+descriptor+ ": "+str(input_file) +" not defined or not found. Run with option -h for help.")
 
 def test_writeable_folder(folder, descriptor=''):
   rnumber= random.randint(1, 99999)
   folder=Folder(folder)
   filename=folder+'WrItE_TeSt.'+str(rnumber)
   if bash('echo "x" > '+filename+' && rm '+filename)[0]:
-    raise Exception, "ERROR "+descriptor+ ": cannot write in "+folder
+    raise Exception("ERROR "+descriptor+ ": cannot write in "+folder)
 
 is_file=os.path.isfile
 is_directory=os.path.isdir
@@ -5811,7 +6060,7 @@ def sankoff(tree, node2seqFn=None, matrix=None):
     matrix={'A':{'A':0, 'C':5, 'G':2, 'T':5},            'C':{'A':5, 'C':0, 'G':5, 'T':2},            'G':{'A':2, 'C':5, 'G':0, 'T':5},            'T':{'A':5, 'C':2, 'G':5, 'T':0}    }
   if node2seqFn is None:     node2seqFn= lambda x:x.sequence
   seq_length= len(node2seqFn( tree.get_leaves()[0] )) #testing node2seqFn 
-  alphabet=matrix.keys()
+  alphabet=list(matrix.keys())
   node2ancestral={}
   for sequence_index in range(seq_length):
     ### assigning costs, leaf to root
@@ -5823,10 +6072,10 @@ def sankoff(tree, node2seqFn=None, matrix=None):
         node2costPerNt[node]={}
         for lett in alphabet:
           if lett==lett_this_node:          node2costPerNt[node][lett]= 0
-          else:                             node2costPerNt[node][lett]= sys.maxint-1000
+          else:                             node2costPerNt[node][lett]= sys.maxsize-1000
       else: 
         #initializing ancestral seq on first round (index=0)
-        if not node2ancestral.has_key(node): node2ancestral[node]=''
+        if node not in node2ancestral: node2ancestral[node]=''
         node2costPerNt[node]={}
         for lett in alphabet:
           c=0
@@ -5837,7 +6086,7 @@ def sankoff(tree, node2seqFn=None, matrix=None):
               if node2costPerNt[child][lett2]==node2cost[child]:
                 best_lett2=lett2
                 break
-            if best_lett2 is None: cost_change=sys.maxint-1000          #special case
+            if best_lett2 is None: cost_change=sys.maxsize-1000          #special case
             else:                  cost_change= matrix[lett][best_lett2] 
             c+=min( [node2cost[child]+   cost_change   , node2costPerNt[child][lett] ]  )  # cost change, cost unchange
           node2costPerNt[node][lett]=c
@@ -5860,6 +6109,8 @@ def sankoff(tree, node2seqFn=None, matrix=None):
               break
   return node2ancestral
 
+
+codon2sitecount={}  #{ codon: [sites]  }  #sites as with split_nonsense=True
 def count_sites(cds, silent=False, split_nonsense=False):
   """Counts the number of possible  Syn and nonsyn sites for a input nucletoide coding sequence. 
   As a single site can be partly non-syn and partly syn, the numbers returned are float (always mutiple of one third)
@@ -5868,13 +6119,14 @@ def count_sites(cds, silent=False, split_nonsense=False):
   Returns [nonSyn, Syn,  CpG_nonSyn, CpG_syn]
   if nonsense==True, nonsense (stop) mutations are differentiated from nonsyn mutations. the function instead returns [ nonSyn, Syn, NonSense,  CpG_nonSyn, CpG_syn, CpG_nonsense ] 
   """   
+  global codon2sitecount
   cds=replace(upper(nogap(cds)), 'U', 'T')
   syn=0    ;  nonsyn=0   # these will result to be three times as much the actual values: I dive them as the very last step!
   cpg_syn=0 ; cpg_nonsyn=0
   nonsense=0;   cpg_nonsense=0
   #noncpg_syn=0 ; noncpg_nonsyn=0
-  
-  if len(cds)%3!=0: raise Exception, "count_sites ERROR the sequence must be composed of codons (length multiple of 3)"
+
+  if len(cds)%3!=0: raise Exception("count_sites ERROR the sequence must be composed of codons (length multiple of 3)")
   for i_codon in range(len(cds)/3):
     ## cycling codons
     codon=cds[i_codon*3:i_codon*3+3]
@@ -5882,28 +6134,46 @@ def count_sites(cds, silent=False, split_nonsense=False):
       if not silent:        printerr('count sites WARNING skipping codon n.'+str(i_codon+1)+' : '+codon, 1)
       continue
 
-    for i_within_codon in range(3):
-      ## cycling each position
-      nt= codon[i_within_codon]
-      i_cds=i_codon*3+i_within_codon
-      syn_changes_this_pos=0; nonsense_this_pos=0
-      for alt_nt in 'ACTG':
-        if alt_nt==nt: continue
-        alt_codon=   codon[:i_within_codon]+alt_nt+codon[i_within_codon+1:]
-        if transl(alt_codon)==transl(codon):          
-          syn_changes_this_pos+=1
-        elif "*" in transl(alt_codon) +transl(codon): nonsense_this_pos+=1
+    if codon in codon2sitecount:      n,s,x,cn,cs,cx=codon2sitecount[codon]
+    else:
+      n,s,x,cn,cs,cx=0,0,0,0,0,0
 
-      is_cpg= (   nt == 'G' and (  (  i_cds+1<len(cds)  and   cds[i_cds+1] =='C' )  or (i_cds!=0 and cds[i_cds-1] =='C' )    )     ) or \
-            (   nt == 'C' and (  (  i_cds+1<len(cds)  and   cds[i_cds+1] =='G' )  or (i_cds!=0 and cds[i_cds-1] =='G' )    )     )        # # G and the next or previous is C OR #C and the
-      
-      syn+=  syn_changes_this_pos
-      nonsyn+= (3-syn_changes_this_pos-nonsense_this_pos)
-      nonsense+=nonsense_this_pos
-      if is_cpg:    
-        cpg_syn+=  syn_changes_this_pos
-        cpg_nonsyn+= (3-syn_changes_this_pos-nonsense_this_pos)
-        cpg_nonsense+= nonsense_this_pos
+      for i_within_codon in range(3):
+        ## cycling each position
+        nt= codon[i_within_codon]
+        i_cds=i_codon*3+i_within_codon
+        syn_changes_this_pos=0; nonsense_this_pos=0
+        for alt_nt in 'ACTG':
+          if alt_nt==nt: continue
+          alt_codon=   codon[:i_within_codon]+alt_nt+codon[i_within_codon+1:]
+          if transl(alt_codon)==transl(codon):          
+            syn_changes_this_pos+=1
+          elif "*" in transl(alt_codon) +transl(codon): nonsense_this_pos+=1
+
+        is_cpg= (   nt == 'G' and (  (  i_cds+1<len(cds)  and   cds[i_cds+1] =='C' )  or (i_cds!=0 and cds[i_cds-1] =='C' )    )     ) or \
+              (   nt == 'C' and (  (  i_cds+1<len(cds)  and   cds[i_cds+1] =='G' )  or (i_cds!=0 and cds[i_cds-1] =='G' )    )     )        # # G and the next or previous is C OR #C and the
+
+        s+=syn_changes_this_pos      
+        n+=(3-syn_changes_this_pos-nonsense_this_pos)
+        x+=nonsense_this_pos
+        #syn+=    s
+        #nonsyn+= n 
+        #nonsense+=nonsense_this_pos
+        if is_cpg:    
+          cs+=  syn_changes_this_pos
+          cn+= (3-syn_changes_this_pos-nonsense_this_pos)
+          cx+= nonsense_this_pos
+          # cpg_syn+=  syn_changes_this_pos
+          # cpg_nonsyn+= (3-syn_changes_this_pos-nonsense_this_pos)
+          # cpg_nonsense+= nonsense_this_pos
+      codon2sitecount[codon]=n,s,x,cn,cs,cx
+    syn+=s
+    nonsyn+=n
+    nonsense+=x
+    cpg_syn+=cs
+    cpg_nonsyn+=cn
+    cpg_nonsense+=cx
+
       #else:
       #  noncpg_syn+=  syn_changes_this_pos
       #  noncpg_nonsyn+= (3-syn_changes_this_pos)        
@@ -5930,8 +6200,8 @@ def count_changes(cds, cds2, silent=True, split_nonsense=False):
   cpg_syn=0 ; cpg_nonsyn=0; cpg_nonsense=0
   #noncpg_syn=0 ; noncpg_nonsyn=0
   
-  if len(cds)%3!=0 or len(cds2)%3!=0: raise Exception, "count_changes ERROR the sequences must be composed of codons (length multiple of 3)"
-  if len(cds)!=len(cds2):             raise Exception, "count_changes ERROR the sequences do not have the same length"
+  if len(cds)%3!=0 or len(cds2)%3!=0: raise Exception("count_changes ERROR the sequences must be composed of codons (length multiple of 3)")
+  if len(cds)!=len(cds2):             raise Exception("count_changes ERROR the sequences do not have the same length")
   for i_codon in range(len(cds)/3):
     ## cycling codons
     codon=cds[i_codon*3:i_codon*3+3]
@@ -5942,7 +6212,7 @@ def count_changes(cds, cds2, silent=True, split_nonsense=False):
     if not all([lett in 'ACTG' for lett in codon2] ):       
       if not silent:        printerr('count_changes WARNING skipping codon2 n.'+str(i_codon+1)+' : '+codon2, 1)
       continue
-    if ('-' in codon and codon!='---') or  ('-' in codon2 and codon2!='---') : raise Exception, "count_changes ERROR the sequences must be aligned by codon, i.e. the gaps must be in groups of three"
+    if ('-' in codon and codon!='---') or  ('-' in codon2 and codon2!='---') : raise Exception("count_changes ERROR the sequences must be aligned by codon, i.e. the gaps must be in groups of three")
     if '-' in codon or '-' in codon2: 
       #skipping gap position
       continue
@@ -5989,8 +6259,8 @@ def count_unique_changes(cds, other_cds_list, silent=True, split_nonsense=False)
   for cds2 in other_cds_list:
     cds2=replace(upper(cds2), 'U', 'T')
 
-    if len(cds)%3!=0 or len(cds2)%3!=0: raise Exception, "count_unique_changes ERROR the sequences must be composed of codons (length multiple of 3)"
-    if len(cds)!=len(cds2):             raise Exception, "count_changes ERROR the sequences do not have the same length"
+    if len(cds)%3!=0 or len(cds2)%3!=0: raise Exception("count_unique_changes ERROR the sequences must be composed of codons (length multiple of 3)")
+    if len(cds)!=len(cds2):             raise Exception("count_changes ERROR the sequences do not have the same length")
     for i_codon in range(len(cds)/3):
       ## cycling codons
       codon=cds[i_codon*3:i_codon*3+3]
@@ -6001,7 +6271,7 @@ def count_unique_changes(cds, other_cds_list, silent=True, split_nonsense=False)
       if not all([lett in 'ACTG' for lett in codon2] ):       
         if not silent:        printerr('count_unique_changes WARNING skipping codon2 n.'+str(i_codon+1)+' : '+codon2, 1)
         continue
-      if ('-' in codon and codon!='---') or  ('-' in codon2 and codon2!='---') : raise Exception, "count_unique_changes ERROR the sequences must be aligned by codon, i.e. the gaps must be in groups of three"
+      if ('-' in codon and codon!='---') or  ('-' in codon2 and codon2!='---') : raise Exception("count_unique_changes ERROR the sequences must be aligned by codon, i.e. the gaps must be in groups of three")
       if '-' in codon or '-' in codon2: 
         #skipping gap position
         continue
@@ -6018,10 +6288,10 @@ def count_unique_changes(cds, other_cds_list, silent=True, split_nonsense=False)
             i_cds=i_codon*3+i_within_codon
             nt=cds[i_cds];    nt2=cds2[i_cds]
             #### dtermining if the change is uniq
-            if position_to_change.has_key( i_cds ) and nt2 in position_to_change[i_cds]: 
+            if i_cds in position_to_change and nt2 in position_to_change[i_cds]: 
               continue  #skipping non-uniq
             #is uniq
-            if not position_to_change.has_key( i_cds ): position_to_change[i_cds]=[]
+            if i_cds not in position_to_change: position_to_change[i_cds]=[]
             position_to_change[i_cds].append(nt2)
                         
             is_cpg= (   nt == 'G' and (  (  i_cds+1<len(cds)  and   cds[i_cds+1] =='C' )  or (i_cds!=0 and cds[i_cds-1] =='C' )    )     ) or \
@@ -6048,14 +6318,14 @@ def add_ancestral_states(t, rst_file, add=True):
   fh=open(rst_file, 'r')
   line=fh.readline()
   while line and line != "tree with node labels for Rod Page's TreeView\n":    line=fh.readline()
-  if not line: raise IOError, "add_ancestral_states ERROR can't find line \"tree with node labels for Rod Page's TreeView\" in file: "+rst_file
+  if not line: raise IOError("add_ancestral_states ERROR can't find line \"tree with node labels for Rod Page's TreeView\" in file: "+rst_file)
   line=fh.readline() #now in next line: tree with nodes names like:       (((((1_Homo_sapiens, 3_Pan_troglodytes) 11 , 2_Gorilla_gorilla) 10 , 4_Pongo_pygmaeus) 9 , 5_Macaca_mulatta) 8 , 6_Callithrix_jacchus) 7 ;
   tree_text=replace(line, ') ', '):')  #making it read like it was the distance
   t2=PhyloTree(tree_text)
   for node in t2.traverse():
     if node.is_leaf():      
       node.index= int(node.name.split('_')[0])
-      node.name= join( node.name.split('_')[1:], '_' )
+      node.name= '_'.join( node.name.split('_')[1:])
     else: 
       node.name= str(int(node.dist))
       node.index=    int(node.dist)
@@ -6067,7 +6337,7 @@ def add_ancestral_states(t, rst_file, add=True):
     if line.startswith('node'): #ancestral node, reconstructed
       index=int(line.split()[1][1:])
       #print 'searching index '+str(index)
-      (t2&(str(index))).sequence=   join(line.split()[2:], '')
+      (t2&(str(index))).sequence=   ''.join(line.split()[2:])
       #print 'adding to node '+str(index)+' '+(t2&(str(index))).seq
     line=fh.readline()   
   fh.close()
@@ -6086,10 +6356,10 @@ def mapping_trees(t1, t2):
   """ Given two identical trees, it maps the nodes of one into the other, exploiting the leaves under each node -- a uniq property of trees (right?).  The algorithm is not very efficient, it uses almost brute force"""
   hash_two2one={}
   for node1 in t1.traverse():
-    id1=   join(sorted(node1.get_leaf_names()), '&?')
+    id1=   '&?'.join(sorted(node1.get_leaf_names()))
     for node2 in t2.traverse():
-      if not hash_two2one.has_key(node2):
-        id2=   join(sorted(node2.get_leaf_names()), '&?')
+      if node2 not in hash_two2one:
+        id2=   '&?'.join(sorted(node2.get_leaf_names()))
         if id2==id1:        hash_two2one[node2]=node1
   out=[]
   for node2 in hash_two2one:
@@ -6182,11 +6452,11 @@ Returns an alignment instance. NOTE: it requires  temp_folder to be defined if p
 
   if sorted(protein_alignment.titles()) != sorted([t for t, s in titles_seqs_list ]): 
     for i in  sorted(protein_alignment.titles()):
-      print i
-    print "--------------------------------"
+      print(i)
+    print("--------------------------------")
     for i in   sorted([t for t, s in titles_seqs_list ]):
-      print i
-    raise Exception, "align_coding_sequences ERROR the titles provided and those in the protein_alignment do not correspond!"
+      print(i)
+    raise Exception("align_coding_sequences ERROR the titles provided and those in the protein_alignment do not correspond!")
 
   cds_alignment=alignment()
   for t, s in titles_seqs_list:
@@ -6221,24 +6491,28 @@ def function_help(f):
   return h
 
   
-def interactive_mode(vars=None, message="welcome to the shell" ):
+def interactive_mode(message="welcome to the shell" ):
   """ To open an interactive shell inside a python script. Usage: interactive_mode()() ; double parenthesis is because this returns a pointer to a function. """
-  #prompt_message = "Welcome!  Useful: G is the graph, DB, C"
-  prompt_message = message
-  try:
-      from IPython.Shell import IPShellEmbed
-      ipshell = IPShellEmbed(argv=[''],banner=prompt_message,exit_msg="Goodbye")
-      return  ipshell
-  except ImportError:
-      if vars is None:  vars=globals()
-      import code
-      import rlcompleter
-      import readline
-      readline.parse_and_bind("tab: complete")
-      # calling this with globals ensures we can see the environment
-      print prompt_message
-      shell = code.InteractiveConsole(vars)
-      return shell.interact
+  import code
+  return code.interact(banner=message, local=locals()) ## fix 2023
+
+
+  # #prompt_message = "Welcome!  Useful: G is the graph, DB, C"
+  # prompt_message = message
+  # try:
+  #     from IPython.Shell import IPShellEmbed
+  #     ipshell = IPShellEmbed(argv=[''],banner=prompt_message,exit_msg="Goodbye")
+  #     return  ipshell
+  # except ImportError:
+  #     if vars is None:  vars=globals()
+  #     import code
+  #     import rlcompleter
+  #     import readline
+  #     readline.parse_and_bind("tab: complete")
+  #     # calling this with globals ensures we can see the environment
+  #     print(prompt_message)
+  #     shell = code.InteractiveConsole(vars)
+  #     return shell.interact
 
 
 def load_chromosome_lengths(chromosome_length_file, max_chars=0, exception_raised=Exception):
@@ -6247,24 +6521,24 @@ def load_chromosome_lengths(chromosome_length_file, max_chars=0, exception_raise
   for line in open(chromosome_length_file, 'r'):     
     fasta_identifier = line.split()[1]
     length=int(line.split()[0])
-    if chromosome_lengths.has_key(fasta_identifier): 
+    if fasta_identifier in chromosome_lengths: 
       bash('rm '+chromosome_length_file)
-      raise exception_raised, "ERROR the target file has a duplicate fasta identifier! ("+line.split()[1]+') Please modify it and rerun. Note: remove the .index and *.fa.n* blast formatting files after changing the target file'
+      raise exception_raised("ERROR the target file has a duplicate fasta identifier! ("+line.split()[1]+') Please modify it and rerun. Note: remove the .index and *.fa.n* blast formatting files after changing the target file')
     if length==0: 
       bash('rm '+chromosome_length_file)
-      raise exception_raised, "ERROR the target file has a length zero entry! ("+line.split()[1]+') Please modify it and rerun. Note: remove the .index and *.fa.n* blast formatting files after changing the target file'
+      raise exception_raised("ERROR the target file has a length zero entry! ("+line.split()[1]+') Please modify it and rerun. Note: remove the .index and *.fa.n* blast formatting files after changing the target file')
     if is_number(fasta_identifier) and fasta_identifier[0]=='0':
       bash('rm '+chromosome_length_file)
-      raise exception_raised, "ERROR the target file has a numeric fasta identifier starting with zero!  ("+line.split()[1]+') This would cause an unexpected blast behavior. Please modify this or these ids and rerun. Note: remove the .index and *.fa.n* blast formatting files after changing the target file'
+      raise exception_raised("ERROR the target file has a numeric fasta identifier starting with zero!  ("+line.split()[1]+') This would cause an unexpected blast behavior. Please modify this or these ids and rerun. Note: remove the .index and *.fa.n* blast formatting files after changing the target file')
     if ':subseq(' in fasta_identifier: 
       bash('rm '+chromosome_length_file)
-      raise  exception_raised, "ERROR with fasta header: "+fasta_identifier+' ; this was generated by fastasubseq and will cause unexpected behavior of this program, since it is using fastasubseq itself to cut sequences. Please clean the titles in your target file from ":subseq(" tags. Note: remove the .index and *.fa.n* blast formatting files after changing the target file '
+      raise  exception_raised("ERROR with fasta header: "+fasta_identifier+' ; this was generated by fastasubseq and will cause unexpected behavior of this program, since it is using fastasubseq itself to cut sequences. Please clean the titles in your target file from ":subseq(" tags. Note: remove the .index and *.fa.n* blast formatting files after changing the target file ')
     if max_chars and   len(fasta_identifier)>max_chars: 
       bash('rm '+chromosome_length_file)
-      raise  exception_raised, "ERROR with fasta header: "+fasta_identifier+' is too long. The maximum length for a fasta identifier (first word of the title) is '+str(max_chars)+' characters. Please clean the titles in your target file. Note: remove the .index and *.fa.n* blast formatting files after changing the target file'
+      raise  exception_raised("ERROR with fasta header: "+fasta_identifier+' is too long. The maximum length for a fasta identifier (first word of the title) is '+str(max_chars)+' characters. Please clean the titles in your target file. Note: remove the .index and *.fa.n* blast formatting files after changing the target file')
     if '/' in fasta_identifier:
       bash('rm '+chromosome_length_file)
-      raise  exception_raised, "ERROR with fasta header: "+fasta_identifier+' has forbidden character: "/" \nPlease clean the titles in your target file. Note: remove the .index and *.fa.n* blast formatting files after changing the target file'
+      raise  exception_raised("ERROR with fasta header: "+fasta_identifier+' has forbidden character: "/" \nPlease clean the titles in your target file. Note: remove the .index and *.fa.n* blast formatting files after changing the target file')
 
     chromosome_lengths[fasta_identifier]=length
   set_MMlib_var('chromosome_lengths', chromosome_lengths)
@@ -6272,3 +6546,43 @@ def load_chromosome_lengths(chromosome_length_file, max_chars=0, exception_raise
 def get_chromosome_lengths():
   global chromosome_lengths
   return chromosome_lengths
+
+def RNAplot(seq, ss, fileout, label='', options=''):
+  """Produce a structure plot with RNAplot into fileout. 
+  Standard postscript file is converted to specified format (from extension) if not .ps  (imagemagik suite required) 
+  Label, if provided, adds a text label below the structure
+"""
+  global temp_folder
+  bbash( 'cd {temp}; echo ">title\n{seq}\n{ss}" | RNAplot {opts} '.format(temp=temp_folder, seq=seq, ss=ss, opts=options) )
+  expected_file=temp_folder+'title_ss.ps'
+  output_extension = fileout.split('.')[-1]
+  if output_extension=='ps' and not label:
+    bbash('mv {ps} {out}'.format(ps=expected_file, out=fileout))
+  else:
+    labelbit='' if not label else '-label "{lab}"'.format(lab=label)
+    bbash( 'montage -geometry +1+1 -density 150 {labelbit} {ps} {out}'.format(ps=expected_file, out=fileout, labelbit=labelbit) )
+
+def RNAfold(seq, constraints=None, img=None, options='', title=None, rnaplot_options=''):
+  """Runs RNAfold to predict the secondary structure of this sequence. 
+  Optionally can produce an image (multiple extensions accepted);
+  It can accept fold constraints; possible characters:   (.)    ;
+ Returns:  [secondary structure, free energy]
+  Secondary structure reported will have the length of the input sequence (without gaps, if any)"""
+  seq=nogap(seq)
+  if constraints: 
+    accepted_chars={'|':0, 'x':0, '<':0, '>':0, '(':0, ')':0, '.':0}
+    if not len(constraints)==len(seq): 
+      raise Exception('RNAfold ERROR lenght of sequence and of constraints must be the same!  Seq.length: {s}  Constraints: {c}'.format(s=len(seq), c=len(constraints)))
+    if not all([c in accepted_chars  for c in constraints] ): 
+      raise Exception('RNAfold ERROR illegal characters in constraints. Provided: {c}'.format(c=constraints))
+
+  add='' if not constraints else '\n'+constraints
+  if constraints: options+=' -C '
+  rnafold_out=bbash( 'echo ">title\n{seq}{add}" | RNAfold --noPS {opts} '.format(temp=temp_folder, seq=seq, add=add, opts=options) )
+  free_energy=    float(rnafold_out.split('(')[-1][:-1] )
+  ss=  rnafold_out.split('\n')[-1].split( ' (')[0]
+  label='{tit}E= {e}'.format(tit=title+'\n' if title else '', e=free_energy)
+  if not img is None: RNAplot(seq, ss, fileout=img, label=label, options=rnaplot_options)
+  return [free_energy, ss]
+
+

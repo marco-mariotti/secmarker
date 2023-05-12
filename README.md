@@ -1,8 +1,9 @@
+# secmarker
+Secmarker is a search tool for selenocysteine tRNA (tRNA-Sec) identification. 
+The presence of tRNA-Sec in a genome indicates the use of selenocysteine by the organism. 
+Old version was written in python2 and now it's written in python3
 
 ## SECMARKER 0.4
-
-Secmarker is a search tool for selenocysteine tRNA (tRNA-Sec) identification.
-The presence of tRNA-Sec in a genome indicates the use of selenocysteine by the organism.
 
 * Web server
   A SecMarker web server is available for online analysis:
@@ -49,14 +50,4 @@ optional arguments:
                         encoded in the sequence)
   -AT12                 force a 12 bp AT-stem, that is a 7/5 fold tRNA
   -O O, --options O     additional options for cmsearch
-
-
-
-
-* Contact us:
-  dsantesmassesruiz@bwh.harvard.edu
-
-
-Roderic Guigó lab
-Centre for Genomic Regulation (CRG), Barcelona
-2015-2020
+  

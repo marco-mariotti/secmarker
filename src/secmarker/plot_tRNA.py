@@ -1,6 +1,6 @@
-import sys
-from MMlib import bash
-from Secmarker import rnaplot_arm_colors,cca_coords,expand_boundingbox
+import sys 
+from .MMlib3 import bash
+from secmarker_lib import rnaplot_arm_colors,cca_coords,expand_boundingbox
 
 """usage: python plot_tRNA.py input
 input is the trnasec.ss file
@@ -56,7 +56,7 @@ def target_ss_pairs(rf,ss,seq):
     target_ss_pairs = []
     for i,j in pairs(ss):
         if not rf[i] == rf[j]:
-            raise Exception, 'ERROR: wrong hand_rf annotation: %s-%s for this pair: %s-%s' % (rf[i], rf[j], i,j)
+            raise Exception('ERROR: wrong hand_rf annotation: %s-%s for this pair: %s-%s' % (rf[i], rf[j], i,j))
         nt_i = seq[i]
         nt_j = seq[j]
         try:
@@ -73,10 +73,10 @@ for i in open(trna_ss):
     if i.startswith('>>'):
         trna_id = int(i.rstrip().split(':')[-1])
         if i in d:
-            raise Exception, 'ERROR: tRNA identifiers not unique'
+            raise Exception('ERROR: tRNA identifiers not unique')
     d.setdefault(trna_id, []).append(i.strip())
 
-for trna_id,v in d.items():
+for trna_id,v in list(d.items()):
 
     rf  = v[-3]
     seq = v[-2].replace('T','U')
@@ -84,7 +84,7 @@ for trna_id,v in d.items():
 
     # control paired parentheses                                                                                                                                                                                                             
     if ss.count('(') != ss.count(')'):
-        raise Exception, 'ERROR: malformated ss, unbalanced parentheses in '+ss
+        raise Exception('ERROR: malformated ss, unbalanced parentheses in '+ss)
 
     pre = '--pre "/dbasemark { newpath 1 sub coor exch get aload pop fsize 1.75 div 0 360 arc stroke} bind def /outlinecolor {0.6 setgray} bind def /paircolor {0.6 setgray} bind def '
     for i,j,category,arm in target_ss_pairs(rf,ss,seq):
@@ -106,7 +106,7 @@ for trna_id,v in d.items():
 
     rnaplot_input =  '>tRNA_%s\n%s\n%s' % (trna_id,seq,ss)
     b = bash('echo "'+ rnaplot_input +'" | RNAplot -t 1 '+ pre )
-    if 'ERROR' in b[1]: raise Exception, b[1]
+    if 'ERROR' in b[1]: raise Exception(b[1])
     ps_file = 'tRNA_%s_ss.ps' % trna_id
     # modify coords of CCA 3' end, if 'cca' is defined in rf string
     if rf.find('cca') > -1:
@@ -115,4 +115,4 @@ for trna_id,v in d.items():
     expand_boundingbox(ps_file)
     png_file = 'tRNA_%s_ss.png' % trna_id
     b = bash('convert -density 150 '+ ps_file +' '+ png_file)
-    if b[0]: raise Exception, b[1]
+    if b[0]: raise Exception(b[1])

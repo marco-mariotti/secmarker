@@ -25,7 +25,7 @@ __VERSION__="secmarker-0.4a"
 import sys,os
 import argparse
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) +'/library')
-from MMlib import *
+from .MMlib3 import *
 os.environ['PATH'] = os.path.dirname(os.path.realpath(__file__)) +'/bin:'+os.environ['PATH']
 
 def get_parser():
@@ -62,27 +62,27 @@ def main(args):
     # library folder
     global secmarker_library; secmarker_library = os.path.dirname(os.path.realpath(__file__))+'/library/'
     if not os.path.exists(secmarker_library):
-        raise Exception, "ERROR folder %s does not exist." % secmarker_library
+        raise Exception("ERROR folder %s does not exist." % secmarker_library)
 
     # cm file
     cm = secmarker_library+'tRNAsec_db.cm'
     if not os.path.isfile(cm):
-        raise Exception, "ERROR cm:%s file not found." % cm
+        raise Exception("ERROR cm:%s file not found." % cm)
     # check if the required programs are available: cmsearch, esl-sfetch and RNAplot
     check_depencies(args)
 
     # check target file presence
     if not os.path.isfile(args.target):
-        raise Exception, "ERROR target:%s file not found." % args.target
+        raise Exception("ERROR target:%s file not found." % args.target)
 
     # generate a soft link of target file
     # this will solve the problem of not having permission in the target folder when writting the esl-sfetch index
     target_link = args.o +'genome_link.fa'
     if not os.path.isfile(target_link):
         b = bash('ln -s '+ os.path.abspath(args.target) +' '+ target_link)
-        if b[0]: raise Exception, b[1]
+        if b[0]: raise Exception(b[1])
     if not os.path.exists(os.readlink(target_link)):
-        raise Exception, 'ERROR the soft link for the target sequence in the output folder:%s was not correctly created...' % (args.o)
+        raise Exception('ERROR the soft link for the target sequence in the output folder:%s was not correctly created...' % (args.o))
     # keep original target path and use the soft link as the main target file
     user_input_target = args.target
     args.target = target_link
@@ -90,9 +90,9 @@ def main(args):
     # generate esl-sfetch .ssi index file
     if not os.path.isfile(args.target +'.ssi'):
         b=bash('esl-sfetch --index '+ args.target)
-        if b[0]: raise Exception, b[1]
+        if b[0]: raise Exception(b[1])
         if not os.path.isfile(args.target +'.ssi'):
-            raise Exception, "ERROR unable to generate target index .ssi file:%s ." % args.target+'.ssi'
+            raise Exception("ERROR unable to generate target index .ssi file:%s ." % args.target+'.ssi')
 
 
     ########## computing chromosome lengths if necessary, loading them
@@ -112,11 +112,11 @@ def main(args):
         # if infernal file exists, check if the target is the same
         target_is_the_same, infernal_target = check_target(cmsearch_outfile, args.target)
         if not target_is_the_same:
-            raise Exception, 'ERROR: output folder contains infernal outputs from another target: %s' % infernal_target
+            raise Exception('ERROR: output folder contains infernal outputs from another target: %s' % infernal_target)
             
     else:
         b = bash('cmsearch --cpu '+ args.cpu +' --notextw -T '+ str(args.T) +' -o '+ cmsearch_tmp +' '+ args.O +' '+ cm +' '+ args.target)
-        if b[0]: raise Exception, b[1]
+        if b[0]: raise Exception(b[1])
         bbash('mv '+ cmsearch_tmp +' '+cmsearch_outfile)
         
     
@@ -147,14 +147,14 @@ def main(args):
             acd_gene = hit.extend(0,-right) # copy of hit, keeping its attributes but modifying the coords
             acd_gene.exons[0][0] = acd_gene.exons[0][1] - 2
 
-        if hit.id in id_dict: raise Exception, 'ERROR this hit.id:%s is not unique!' % (hit.id)
+        if hit.id in id_dict: raise Exception('ERROR this hit.id:%s is not unique!' % (hit.id))
         id_dict[hit.id] = hit
         acd_list.append(acd_gene)
 
     # remove redundancy taking into account only the anticodon
     def mode_function(a,b):
         return sorted([a, b], key=lambda x: x.score, reverse=True)[0]
-    nr_acd_list = merge_genes(acd_list, strand=True, phase=False, mode = mode_function)
+    nr_acd_list = parser.parse_args(r_acd_list = merge_genes(acd_list, strand=True, phase=False, mode = mode_function))
     nr_hits_list = [id_dict[x.id] for x in nr_acd_list]
 
 #    nr_hits_list = merge_genes(infernal_hits_list, strand=True, phase=False, mode = mode_function)
@@ -195,7 +195,7 @@ def main(args):
         try:
             acd = hit.hand_rf.find('acd')
         except AttributeError:
-            raise Exception, 'ERROR %s generated with an obsolete cm, remove that file or select a new output folder with option "-o new_folder"' % (infernal)
+            raise Exception('ERROR %s generated with an obsolete cm, remove that file or select a new output folder with option "-o new_folder"' % (infernal))
 
         if acd < 0: continue         # skip hits that do not span the anticodon
         hit.acd = hit.alignment.seq_of('t')[ acd:acd+3 ].upper()
@@ -279,10 +279,11 @@ def main(args):
         truncated = hit.ss.startswith('~') or hit.ss.endswith('~')
         header = '.'.join([sp,trna_type,str(hit.indexx)])+' '+hit.header()+' infernal_score:'+ str(hit.score) +' truncated:'+str(truncated) +' discr_base:'+hit.dbase +' anticodon:'+ hit.acd
         comment = 'tRNAsec:%s model:%s infernal_score:%s truncated:%s target:%s discr_base:%s anticodon:%s' % (hit.indexx,hit.query.chromosome,hit.score,truncated,hit.target,hit.dbase,hit.acd)
-        
-        print >> output_fa_fh, '>%s\n%s' % (header, hit.extended_seq)
-        print >> output_gff_fh, hit.gff( tag = 'tRNA', comment = comment , program = 'secmarker')
-        print >> output_ss_fh, hit_nice_output(hit)
+
+        print('>%s\n%s' % (header, hit.extended_seq), file=output_fa_fh)
+        #print(f'>{header}\n{hit.extended_seq}', file=output_fa_fh)
+        print(hit.gff( tag = 'tRNA', comment = comment , program = 'secmarker'), file=output_gff_fh)
+        print(hit_nice_output(hit), file=output_ss_fh)
 
         if __name__=='__main__':
             write( hit.gff( tag = 'tRNA', comment = comment, program = 'secmarker' ) + '\n' )
@@ -320,7 +321,7 @@ def sfetch(self):
     for exon_index in range(len(self.exons)):
         start, stop = self.exons[exon_index]
         b = bash('esl-sfetch '+ '-r '*ifrev +'-c %s-%s "%s" "%s"' % (start, stop, target, self.chromosome))
-        if b[0]: raise Exception, b[1]
+        if b[0]: raise Exception(b[1])
         sequence += ''.join( [x for x in b[1].split('\n') if not x.startswith('>')] )
     return sequence
 setattr(infernalhit, 'sfetch', sfetch)
@@ -441,7 +442,7 @@ def target_ss_pairs(hit):
     target_ss_pairs = []
     for i,j in hit.get_pairs():
         if not hit.hand_rf[i] == hit.hand_rf[j]:
-            raise Exception, 'ERROR: wrong hand_rf annotation: %s-%s for this pair: %s-%s' % (hit.hand_rf[i], hit.hand_rf[j], i,j)
+            raise Exception('ERROR: wrong hand_rf annotation: %s-%s for this pair: %s-%s' % (hit.hand_rf[i], hit.hand_rf[j], i,j))
         nt_i = hit.alignment.seq_of('t')[i]
         nt_j = hit.alignment.seq_of('t')[j]
         try:
@@ -507,9 +508,9 @@ def refine_structure(hit):
     try:
         last_j_Astem = a_stem[-1][1]
     except:
-        print hit
-        print a_stem
-        print t_stem
+        print(hit)
+        print(a_stem)
+        print(t_stem)
         raise
 
     first_j_Tstem = t_stem[0][1]
@@ -569,7 +570,7 @@ def check_target(infernal_output, target):
                 if b[0]: raise Exception
                 target_md5 = b[1].split()[0]
                 b = bash('md5sum '+ target_infernal)
-                if b[0]: raise Exception, b[1]
+                if b[0]: raise Exception(b[1])
                 target_infernal_md5 = b[1].split()[0]
                 if target_md5 == target_infernal_md5:
                     return True,target_infernal
@@ -627,10 +628,10 @@ def draw_tRNA(hit, output_folder):
     hit.pairs_for_pre_string = pairs_for_pre_string(hit)
 
     if len(hit.extended_seq) != len(hit.target_ss):
-        raise Exception, 'ERROR: seq lenght:%s and ss length:%s are not the same' % (len(hit.extended_seq), len(hit.target_ss))
+        raise Exception('ERROR: seq lenght:%s and ss length:%s are not the same' % (len(hit.extended_seq), len(hit.target_ss)))
     # control paired parentheses
     if hit.target_ss.count('(') != hit.target_ss.count(')'):
-        raise Exception, 'ERROR: malformated ss, unbalanced parentheses: >tRNAsec.%s\n%s\n%s' % (hit.indexx,hit.sequence(),hit.target_ss)
+        raise Exception('ERROR: malformated ss, unbalanced parentheses: >tRNAsec.%s\n%s\n%s' % (hit.indexx,hit.sequence(),hit.target_ss))
 
     # input for RNAplot
     rnaplot_input =  '>tRNAsec.%s\n%s\n%s' % (hit.indexx, hit.extended_seq, hit.target_ss)
@@ -653,7 +654,7 @@ def draw_tRNA(hit, output_folder):
 
     # run RNAplot
     b = bash('cd '+ images_folder +'; echo "'+ rnaplot_input +'" | RNAplot -t 1 '+ pre +'; cd -')
-    if 'ERROR' in b[1]: raise Exception, b[1]
+    if 'ERROR' in b[1]: raise Exception(b[1])
     ps_file = images_folder +'tRNAsec.'+ str(hit.indexx) +'_ss.ps'
     # modify coords for CCA seq
     if hit.has_cca:
@@ -662,7 +663,7 @@ def draw_tRNA(hit, output_folder):
     expand_boundingbox(ps_file)
     # convert ps to png
     b = bash('convert -density 150 '+ ps_file +' '+ images_folder +'tRNAsec.'+ str(hit.indexx) +'.png')
-    if b[0]: raise Exception, b[1]
+    if b[0]: raise Exception(b[1])
 
 
 def cca_coords(ps_file):
@@ -696,7 +697,7 @@ def cca_coords(ps_file):
         output += line
         line = fh.readline()
     fh = open(ps_file, 'w')
-    print >> fh, output
+    print(output, file=fh)
     fh.close()
 
 def expand_boundingbox(ps_file, expand=10):
@@ -705,13 +706,13 @@ def expand_boundingbox(ps_file, expand=10):
     for line in open(ps_file):
         if line.startswith('%%BoundingBox:'):
             dsc_header = line.split()[0]
-            llx, lly, urx, ury = map(int, line.rstrip().split()[1:])
+            llx, lly, urx, ury = list(map(int, line.rstrip().split()[1:]))
             lly = lly - expand
             llx = llx - expand
             line = '%s %s %s %s %s\n' % (dsc_header,llx, lly, urx, ury)
         output += line
     fh = open(ps_file, 'w')
-    print >> fh, output
+    print(output, file=fh)
     fh.close()
 
 def check_depencies(args):
@@ -719,29 +720,29 @@ def check_depencies(args):
     b = bash('cmsearch -h')
     if b[0]:
         if 'command not found' in b[1]:
-            raise Exception, 'ERROR: cmsearch program not available'
+            raise Exception('ERROR: cmsearch program not available')
         else:
-            raise Exception, b[1]
+            raise Exception(b[1])
     for i in b[1].split('\n'):
         if i.startswith('# INFERNAL'):
             if not '# INFERNAL 1.1' in i:
-                raise Exception, 'ERROR: Infernal version must be 1.1.X, current version is: '+ i
+                raise Exception('ERROR: Infernal version must be 1.1.X, current version is: '+ i)
             break
     # check if esl-sfetch 
     b = bash('esl-sfetch -h')
     if b[0]:
         if 'command not found' in b[1]:
-            raise Exception, 'ERROR: esl-sfetch program not available'
+            raise Exception('ERROR: esl-sfetch program not available')
         else:
-            raise Exception, b[1]
+            raise Exception(b[1])
     # check if RNAplot is available
     if args.plot:
         b = bash('RNAplot -h')
         if b[0]:
             if 'command not found' in b[1]:
-                raise Exception, 'ERROR: RNAplot program not available'
+                raise Exception('ERROR: RNAplot program not available')
             else:
-                raise Exception, b[1]
+                raise Exception(b[1])
 
 if __name__=='__main__':
     parser = get_parser()
