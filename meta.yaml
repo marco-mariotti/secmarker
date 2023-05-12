@@ -22,7 +22,7 @@ requirements:
     - python >=3.6
 
 about:
-  home: "https://github.com/matteoserrazanetti/secmarker_py3"
+  home: "https://github.com/matteoserrazanetti/secmarker"
   license: MIT
   license_family: MIT
   license_file: 

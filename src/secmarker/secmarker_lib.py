@@ -20,7 +20,7 @@
 #
 ##########################################################################
 
-__VERSION__="secmarker-0.4a" 
+__VERSION__="secmarker-0.4" 
 
 import sys,os
 import argparse
