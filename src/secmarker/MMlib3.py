@@ -4880,7 +4880,8 @@ def merge_genes(gene_list, phase=False, inplace=False, mode='merge', id_mode='SU
       exon_list.append(e)
     gene_list[g_index].index=g_index   #then, I add the same attribute to the gene, to know its position in the gene list without navigating the whole list.
     gene_list[g_index].representing_genes=set()   #index collection. Every time two genes g1 and g2 are found overlapping and g1 is kept but g2 is not, the g1.representing_genes will contain the index of g2, remembering that now g1 represents also g2
-  exon_list.sort(order_genes_to_merge)
+  exon_list.sort(key= cmp_to_key(order_genes_to_merge))
+  #exon_list.sort(order_genes_to_merge)
 
 
   #now I cycle through each exon. At each cycle, there's one ruler, and the next one is checked. Anyway, since these are gene objects, I check the overlap of the full genes, instead of the single exons. NB: If gene1 and gene2 are overlapping, then one of the two is added a ".merged_in" attribute, which basically means, ignore this result and see gene n. (merged_in propriety) instead.

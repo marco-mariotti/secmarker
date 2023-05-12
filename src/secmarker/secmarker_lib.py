@@ -20,10 +20,10 @@
 #
 ##########################################################################
 
-__VERSION__="secmarker-0.4" 
+__VERSION__="secmarker-0.4.1" 
 
 import sys,os
-import argparse
+from . import argparse
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) +'/library')
 from .MMlib3 import *
 os.environ['PATH'] = os.path.dirname(os.path.realpath(__file__)) +'/bin:'+os.environ['PATH']
@@ -60,7 +60,7 @@ def main(args):
     # output folder 
     args.o = Folder( args.o.rstrip('/')+'/' )
     # library folder
-    global secmarker_library; secmarker_library = os.path.dirname(os.path.realpath(__file__))+'/library/'
+    global secmarker_library; secmarker_library = os.path.dirname(os.path.realpath(__file__))+'/models/'
     if not os.path.exists(secmarker_library):
         raise Exception("ERROR folder %s does not exist." % secmarker_library)
 
@@ -154,7 +154,7 @@ def main(args):
     # remove redundancy taking into account only the anticodon
     def mode_function(a,b):
         return sorted([a, b], key=lambda x: x.score, reverse=True)[0]
-    nr_acd_list = parser.parse_args(r_acd_list = merge_genes(acd_list, strand=True, phase=False, mode = mode_function))
+    nr_acd_list = merge_genes(acd_list, strand=True, phase=False, mode = mode_function)
     nr_hits_list = [id_dict[x.id] for x in nr_acd_list]
 
 #    nr_hits_list = merge_genes(infernal_hits_list, strand=True, phase=False, mode = mode_function)
@@ -279,7 +279,7 @@ def main(args):
         truncated = hit.ss.startswith('~') or hit.ss.endswith('~')
         header = '.'.join([sp,trna_type,str(hit.indexx)])+' '+hit.header()+' infernal_score:'+ str(hit.score) +' truncated:'+str(truncated) +' discr_base:'+hit.dbase +' anticodon:'+ hit.acd
         comment = 'tRNAsec:%s model:%s infernal_score:%s truncated:%s target:%s discr_base:%s anticodon:%s' % (hit.indexx,hit.query.chromosome,hit.score,truncated,hit.target,hit.dbase,hit.acd)
-
+        
         print('>%s\n%s' % (header, hit.extended_seq), file=output_fa_fh)
         print(hit.gff( tag = 'tRNA', comment = comment , program = 'secmarker'), file=output_gff_fh)
         print(hit_nice_output(hit), file=output_ss_fh)
