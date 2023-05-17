@@ -20,7 +20,7 @@ Old version was written in python2 and now it's written in python3
 * Installation:
   In order to use Secmarker run the following comands:
 
-  conda install –c matteoserrazanetti secmarker 
+  conda install -c bioconda –c matteoserrazanetti secmarker 
 
 * Running Secmarker.py
   usage: secmarker [-h] -t TARGET [-o O] [-plot] [-T T] [-F F] [-cpu CPU]
