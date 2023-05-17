@@ -11,7 +11,7 @@ Old version was written in python2 and now it's written in python3
   http://secmarker.crg.es/
 
 * Publication
- Didac Santesmasses, Marco Mariotti and Roderic Guigó. Computational identification of the selenocysteine tRNA (tRNASec) in genomes. PLoS Comput Biol. 2017 Feb 13;13(2):e1005383. doi: 10.1371/journal.pcbi.1005383. 
+  Didac Santesmasses, Marco Mariotti and Roderic Guigó. Computational identification of the selenocysteine tRNA (tRNASec) in genomes. PLoS Comput Biol. 2017 Feb 13;13(2):e1005383. doi: 10.1371/journal.pcbi.1005383. 
 
 * Dependencies
   cmsearch and esl-sfetch from the Infernal package (http://infernal.janelia.org/), specifically, version => 1.1 is required.
