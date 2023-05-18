@@ -20,9 +20,11 @@ Old version was written in python2 and now it's written in python3
 * Installation:
   In order to use Secmarker run the following comands:
 
+  conda create -y -n secmarker
+  conda activate secmarker
   conda install -c bioconda –c matteoserrazanetti secmarker 
 
-* Running Secmarker.py
+* Running secmarker
   usage: secmarker [-h] -t TARGET [-o O] [-plot] [-T T] [-F F] [-cpu CPU]
                     [-cca] [-AT12] [-O O]
 
