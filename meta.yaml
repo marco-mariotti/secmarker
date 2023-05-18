@@ -1,0 +1,38 @@
+package:
+  name: {{ name }}
+  version: {{ version }}
+
+source:
+  url: "https://pypi.io/packages/source/{{ name[0] }}/{{ name }}/{{ name }}-{{ version }}.tar.gz"
+
+build:
+  number: 0
+  noarch: python
+  entry_points:
+    - secmarker = secmarker:run_secmarker
+  script: "python3 -m pip install . -vv"
+
+requirements:
+  host:
+    - pip
+    - python >=3.8,<3.10
+  run:
+    - python >=3.8,<3.10
+    - infernal 
+    - easel 
+    - viennarna
+    - networkx 
+    - biopython
+
+about:
+  home: "https://github.com/matteoserrazanetti/secmarker"
+  license: MIT
+  license_family: MIT
+  license_file: 
+  summary: "Description of project"
+  doc_url: 
+  dev_url: 
+
+extra:
+  recipe-maintainers:
+    - matteoserrazanetti
