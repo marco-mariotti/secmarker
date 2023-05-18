@@ -20,8 +20,7 @@
 #
 ##########################################################################
 
-__VERSION__="secmarker-0.4.1" 
-
+from ._version import __version__
 import sys,os
 from . import argparse
 sys.path.insert(0, os.path.dirname(os.path.realpath(__file__)) +'/library')
@@ -744,6 +743,7 @@ def check_depencies(args):
                 raise Exception(b[1])
 
 if __name__=='__main__':
+    print("secmarker v" + str(__version__))
     parser = get_parser()
     args = parser.parse_args()
     main(args)
